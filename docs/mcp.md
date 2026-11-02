@@ -74,6 +74,19 @@ Para probar una escritura permitida, usá un principal con rol de escritura sobr
 descartable, por ejemplo `-e ARL_PRINCIPAL=alice -e ARL_DB_NAME=scratch.db` después de
 `python -m arl.storage.seed --db-name scratch.db`.
 
+## Limitaciones conocidas (aceptadas para el MVP)
+
+- **Argumentos extra de nivel superior:** el SDK los ignora en silencio; no se rechazan. Los
+  campos extra dentro de `changes` sí se rechazan. Ninguno de los dos casos altera la identidad ni
+  los permisos: lo garantiza `test_identity_arguments_cannot_change_the_principal`.
+- **Cobertura de `__main__.py`:** `main()` corre dentro del subproceso stdio, que coverage no mide.
+  La rama "schema con otra versión" no tiene test.
+- **Pruebas en vivo con Claude Code:** la escritura la bloqueó la regla `ask` del cliente. El
+  rechazo del servidor se verificó con el test stdio y con MCP Inspector, nunca con
+  `bypassPermissions`.
+- **Pendiente:** prueba en vivo del `ask` de `guard_paths.py` sobre casos de evaluación existentes
+  (etapa 6).
+
 ## Tests
 
 - `tests/integration/test_mcp_server.py`: `Client(server)` en memoria. Cubre descubrimiento,
