@@ -28,11 +28,6 @@ def test_pinned_major_versions() -> None:
     assert _major("langgraph-checkpoint-sqlite") == 3
 
 
-@pytest.fixture
-def anyio_backend() -> str:
-    return "asyncio"
-
-
 @pytest.mark.anyio
 async def test_mcp_v2_in_memory_roundtrip() -> None:
     """MCPServer + Client(server) en memoria: la base de los tests de integración de la etapa 2."""

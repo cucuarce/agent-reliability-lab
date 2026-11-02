@@ -6,7 +6,7 @@ Datos sintéticos. `--user` es una identidad simulada: no hay autenticación rea
 
 ## Estado y alcance
 
-- Etapa actual: 1 (dominio, storage, ProjectService). No avanzar de etapa sin aprobación explícita.
+- Etapa actual: 2 (servidor MCP, ver `docs/mcp.md`). No avanzar de etapa sin aprobación explícita.
 - Fuera del MVP: RAG, multiagentes, frontend, despliegue cloud, LangSmith, OpenTelemetry.
 
 ## Dos mundos separados

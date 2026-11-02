@@ -21,7 +21,7 @@ Python y LangGraph gestiona proyectos mediante tools MCP (`list_projects`, `get_
 |---|---|---|
 | 0. Bootstrap | Repo, dependencias fijadas, configuración de Claude Code, hook de protección, tests de contrato | ✅ |
 | 1. Dominio | Modelos, política de autorización, SQLite, ProjectService, idempotencia y auditoría | ✅ |
-| 2. Servidor MCP | 3 tools sobre `MCPServer` (SDK v2) | pendiente |
+| 2. Servidor MCP | 3 tools sobre `MCPServer` (SDK v2), `.mcp.json` de solo lectura ([docs/mcp.md](docs/mcp.md)) | ✅ |
 | 3. Grafo | `StateGraph` con aprobación por `interrupt()` | pendiente |
 | 4. Robustez | Idempotencia, conflictos de versión, crash/resume | pendiente |
 | 5. CLI y observabilidad | `arl chat/pending/approve/trace` | pendiente |
@@ -55,6 +55,7 @@ la sincronización bloquea archivos y puede corromper el WAL de SQLite.
 src/arl/domain/      Modelos Pydantic, errores, política de autorización (pura)
 src/arl/storage/     SQLite: schema, repositorios, ledger de idempotencia + auditoría, seed
 src/arl/services/    ProjectService: único punto de acceso al dominio
+src/arl/mcp_server/  Servidor MCP stdio: adaptador fino sobre ProjectService
 tests/unit/          Política, modelos, configuración
 tests/integration/   Servicio contra SQLite real: autorización, versiones, idempotencia, concurrencia
 tests/contracts/     Contratos de las librerías fijadas (SDK MCP v2, LangGraph)

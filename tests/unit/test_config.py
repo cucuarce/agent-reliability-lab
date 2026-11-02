@@ -12,6 +12,17 @@ def test_explicit_data_dir(tmp_path: Path) -> None:
     assert app_db_path({"ARL_DATA_DIR": str(tmp_path)}) == tmp_path.resolve() / "app.db"
 
 
+def test_db_name_selects_a_separate_database(tmp_path: Path) -> None:
+    env = {"ARL_DATA_DIR": str(tmp_path), "ARL_DB_NAME": "dev.db"}
+    assert app_db_path(env) == tmp_path.resolve() / "dev.db"
+
+
+@pytest.mark.parametrize("name", ["../app.db", "sub/dev.db", "dev.sqlite", "DEV.db", ".db"])
+def test_db_name_cannot_be_a_path(tmp_path: Path, name: str) -> None:
+    with pytest.raises(ConfigError, match="ARL_DB_NAME"):
+        app_db_path({"ARL_DATA_DIR": str(tmp_path), "ARL_DB_NAME": name})
+
+
 def test_default_uses_localappdata_on_windows(tmp_path: Path) -> None:
     assert resolve_data_dir({"LOCALAPPDATA": str(tmp_path)}) == (tmp_path / "arl").resolve()
 

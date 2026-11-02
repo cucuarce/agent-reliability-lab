@@ -11,6 +11,9 @@
       "Bash(git diff *)",
       "Bash(git log *)"
     ],
+    "ask": [
+      "mcp__arl__update_task"
+    ],
     "deny": [
       "Read(**/.env)",
       "Edit(**/.env)"

@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+import argparse
 import json
+import os
 import sqlite3
+from collections.abc import Mapping, Sequence
 from importlib.resources import files
 from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, model_validator
 
-from arl.domain.models import Membership, Project, Task, User
+from arl.config import APP_DB_NAME, DB_NAME_ENV, app_db_path
+from arl.domain.models import Membership, Project, Role, Task, User
 from arl.storage.db import connect, init_schema, transaction
 
 
@@ -28,6 +32,22 @@ class SeedData(BaseModel):
             if task.assignee_id and (task.assignee_id, task.project_id) not in members:
                 raise ValueError(f"{task.id}: '{task.assignee_id}' no es miembro del proyecto")
         return self
+
+
+def with_read_only_user(data: SeedData, user_id: str) -> SeedData:
+    """Agrega un usuario ``viewer`` en todos los proyectos (principal de desarrollo)."""
+    if any(user.id == user_id for user in data.users):
+        raise ValueError(f"el usuario '{user_id}' ya existe en los fixtures")
+    viewer_memberships = tuple(
+        Membership(user_id=user_id, project_id=project.id, role=Role.VIEWER)
+        for project in data.projects
+    )
+    return data.model_copy(
+        update={
+            "users": (*data.users, User(id=user_id, name=user_id)),
+            "memberships": (*data.memberships, *viewer_memberships),
+        }
+    )
 
 
 def load_seed(path: Path | None = None) -> SeedData:
@@ -78,3 +98,24 @@ def create_database(
 
 def _rows(models: tuple[BaseModel, ...]) -> list[dict]:
     return [model.model_dump(mode="json") for model in models]
+
+
+def main(argv: Sequence[str] | None = None, env: Mapping[str, str] | None = None) -> int:
+    """``python -m arl.storage.seed``: crea una base sintética en ``ARL_DATA_DIR``."""
+    parser = argparse.ArgumentParser(prog="python -m arl.storage.seed", description=main.__doc__)
+    parser.add_argument("--db-name", default=APP_DB_NAME, help="p. ej. dev.db (default: app.db)")
+    parser.add_argument("--reset", action="store_true", help="borra y recrea la base")
+    parser.add_argument("--read-only-user", help="agrega un usuario viewer en todos los proyectos")
+    args = parser.parse_args(argv)
+
+    path = app_db_path({**(os.environ if env is None else env), DB_NAME_ENV: args.db_name})
+    data = load_seed()
+    if args.read_only_user:
+        data = with_read_only_user(data, args.read_only_user)
+    create_database(path, data, reset=args.reset).close()
+    print(f"base sintética creada: {path}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

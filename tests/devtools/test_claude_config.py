@@ -54,6 +54,42 @@ def test_claude_md_is_concise_and_states_simulated_identity(repo_root: Path) -> 
     assert "identidad simulada" in text
 
 
+def _rule_paths(text: str) -> list[str]:
+    """Patrones de ``paths`` del frontmatter YAML (lista simple, sin dependencias)."""
+    assert text.startswith("---\n"), "la regla debe empezar con frontmatter"
+    frontmatter = text.split("---\n", 2)[1]
+    return [
+        line.strip().removeprefix("- ").strip("\"'")
+        for line in frontmatter.splitlines()
+        if line.strip().startswith("- ")
+    ]
+
+
+def _rules(repo_root: Path) -> list[Path]:
+    rules = sorted((repo_root / ".claude" / "rules").glob("**/*.md"))
+    assert rules
+    return rules
+
+
+def test_rules_are_scoped_to_existing_files(repo_root: Path) -> None:
+    """Una regla cuyo ``paths`` no matchea ningún archivo nunca se carga: sería decorativa."""
+    for rule in _rules(repo_root):
+        patterns = _rule_paths(rule.read_text(encoding="utf-8"))
+        assert patterns, f"{rule.name} sin paths"
+        for pattern in patterns:
+            assert any(repo_root.glob(pattern)), f"{rule.name}: '{pattern}' no matchea archivos"
+
+
+def test_rules_reference_existing_files_and_tests(repo_root: Path) -> None:
+    tests_text = "\n".join(p.read_text(encoding="utf-8") for p in repo_root.glob("tests/**/*.py"))
+    for rule in _rules(repo_root):
+        text = rule.read_text(encoding="utf-8")
+        for ref in re.findall(r"`([\w./-]+\.(?:py|md|json|sql))`", text):
+            assert (repo_root / ref).is_file(), f"{rule.name}: referencia inexistente {ref}"
+        for test_name in re.findall(r"`(test_\w+)`", text):
+            assert f"def {test_name}(" in tests_text, f"{rule.name}: test inexistente {test_name}"
+
+
 def test_claude_md_referenced_files_exist(repo_root: Path) -> None:
     """Cada archivo citado entre backticks en CLAUDE.md debe existir (evita instrucciones rotas)."""
     text = (repo_root / "CLAUDE.md").read_text(encoding="utf-8")

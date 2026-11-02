@@ -18,6 +18,10 @@ def _task(row: sqlite3.Row) -> Task:
     return Task.model_validate(dict(row))
 
 
+def user_exists(conn: sqlite3.Connection, user_id: str) -> bool:
+    return conn.execute("SELECT 1 FROM users WHERE id = ?", (user_id,)).fetchone() is not None
+
+
 def get_role(conn: sqlite3.Connection, user_id: str, project_id: str) -> Role | None:
     row = conn.execute(
         "SELECT role FROM memberships WHERE user_id = ? AND project_id = ?",

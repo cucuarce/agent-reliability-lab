@@ -1,0 +1,21 @@
+{
+  "mcpServers": {
+    "arl": {
+      "type": "stdio",
+      "command": "uv",
+      "args": [
+        "run",
+        "--quiet",
+        "--project",
+        "${CLAUDE_PROJECT_DIR:-.}",
+        "python",
+        "-m",
+        "arl.mcp_server"
+      ],
+      "env": {
+        "ARL_PRINCIPAL": "dev-viewer",
+        "ARL_DB_NAME": "dev.db"
+      }
+    }
+  }
+}

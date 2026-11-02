@@ -8,11 +8,14 @@ WAL de SQLite, así que una ruta dentro de OneDrive se rechaza explícitamente.
 from __future__ import annotations
 
 import os
+import re
 from collections.abc import Mapping
 from pathlib import Path
 
 DATA_DIR_ENV = "ARL_DATA_DIR"
+DB_NAME_ENV = "ARL_DB_NAME"  # p. ej. "dev.db": base separada para el MCP de Claude Code
 APP_DB_NAME = "app.db"
+_DB_NAME_PATTERN = re.compile(r"^[a-z0-9_-]{1,64}\.db$")
 
 
 class ConfigError(ValueError):
@@ -46,4 +49,9 @@ def resolve_data_dir(env: Mapping[str, str] | None = None) -> Path:
 
 
 def app_db_path(env: Mapping[str, str] | None = None) -> Path:
-    return resolve_data_dir(env) / APP_DB_NAME
+    """``<ARL_DATA_DIR>/<ARL_DB_NAME>``; el nombre no puede contener rutas."""
+    env = os.environ if env is None else env
+    name = env.get(DB_NAME_ENV) or APP_DB_NAME
+    if not _DB_NAME_PATTERN.fullmatch(name):
+        raise ConfigError(f"{DB_NAME_ENV}={name!r} inválido: se espera un nombre como 'dev.db'")
+    return resolve_data_dir(env) / name
