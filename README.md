@@ -11,7 +11,8 @@ Python y LangGraph gestiona proyectos mediante tools MCP (`list_projects`, `get_
 - dos suites de evaluación separadas: una determinística y otra conductual.
 
 > **Alcance honesto.** Todos los datos son sintéticos. El parámetro `--user` representa una
-> **identidad simulada**: el proyecto no implementa autenticación real. Las métricas de las
+> **identidad simulada**: el proyecto no implementa autenticación real. Por ahora el agente se
+> prueba con un **LLM simulado** y determinístico; no hay un proveedor real integrado. Las métricas de las
 > evaluaciones describen el comportamiento sobre estos escenarios sintéticos y no demuestran
 > confiabilidad en producción.
 
@@ -22,7 +23,7 @@ Python y LangGraph gestiona proyectos mediante tools MCP (`list_projects`, `get_
 | 0. Bootstrap | Repo, dependencias fijadas, configuración de Claude Code, hook de protección, tests de contrato | ✅ |
 | 1. Dominio | Modelos, política de autorización, SQLite, ProjectService, idempotencia y auditoría | ✅ |
 | 2. Servidor MCP | 3 tools sobre `MCPServer` (SDK v2), `.mcp.json` de solo lectura ([docs/mcp.md](docs/mcp.md)) | ✅ |
-| 3. Grafo | `StateGraph` con aprobación por `interrupt()` | pendiente |
+| 3. Grafo | `StateGraph` con aprobación por `interrupt()` ([docs/agent.md](docs/agent.md)) | ✅ |
 | 4. Robustez | Idempotencia, conflictos de versión, crash/resume | pendiente |
 | 5. CLI y observabilidad | `arl chat/pending/approve/trace` | pendiente |
 | 6. Evaluaciones | ~30 casos, suite determinística + conductual | pendiente |
@@ -56,6 +57,7 @@ src/arl/domain/      Modelos Pydantic, errores, política de autorización (pura
 src/arl/storage/     SQLite: schema, repositorios, ledger de idempotencia + auditoría, seed
 src/arl/services/    ProjectService: único punto de acceso al dominio
 src/arl/mcp_server/  Servidor MCP stdio: adaptador fino sobre ProjectService
+src/arl/agent/       Agente LangGraph: registro de tools, gateway MCP, grafo con aprobación
 tests/unit/          Política, modelos, configuración
 tests/integration/   Servicio contra SQLite real: autorización, versiones, idempotencia, concurrencia
 tests/contracts/     Contratos de las librerías fijadas (SDK MCP v2, LangGraph)
