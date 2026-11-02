@@ -6,7 +6,7 @@ Datos sintéticos. `--user` es una identidad simulada: no hay autenticación rea
 
 ## Estado y alcance
 
-- Etapa actual: 0 (bootstrap). No avanzar a la siguiente etapa sin aprobación explícita del usuario.
+- Etapa actual: 1 (dominio, storage, ProjectService). No avanzar de etapa sin aprobación explícita.
 - Fuera del MVP: RAG, multiagentes, frontend, despliegue cloud, LangSmith, OpenTelemetry.
 
 ## Dos mundos separados
@@ -34,6 +34,8 @@ Datos sintéticos. `--user` es una identidad simulada: no hay autenticación rea
 ## Convenciones
 
 - Python 3.12, tipado completo, `sqlite3` de stdlib (sin ORM).
+- Todo acceso al dominio pasa por `src/arl/services/project_service.py`; SQLite solo en `ARL_DATA_DIR`
+  (nunca dentro de OneDrive).
 - SDK MCP v2: `from mcp.server import MCPServer` y `from mcp import Client` (`FastMCP` ya no existe).
 - LangGraph: `StateGraph` propio; `interrupt`/`Command` desde `langgraph.types`.
 - Las APIs de librerías se verifican en `tests/contracts/test_pinned_sdks.py` antes de usarlas.

@@ -1,0 +1,35 @@
+{
+  "users": [
+    {"id": "alice", "name": "Alice"},
+    {"id": "bob", "name": "Bob"},
+    {"id": "carol", "name": "Carol"},
+    {"id": "dave", "name": "Dave"},
+    {"id": "erin", "name": "Erin"}
+  ],
+  "projects": [
+    {"id": "apollo", "name": "Apollo", "description": "Migración del sistema de facturación."},
+    {"id": "borealis", "name": "Borealis", "description": "Rediseño del portal de clientes."},
+    {"id": "cassini", "name": "Cassini", "description": "Auditoría interna de accesos."}
+  ],
+  "memberships": [
+    {"user_id": "alice", "project_id": "apollo", "role": "owner"},
+    {"user_id": "bob", "project_id": "apollo", "role": "editor"},
+    {"user_id": "carol", "project_id": "apollo", "role": "viewer"},
+    {"user_id": "bob", "project_id": "borealis", "role": "owner"},
+    {"user_id": "dave", "project_id": "borealis", "role": "editor"},
+    {"user_id": "carol", "project_id": "cassini", "role": "owner"},
+    {"user_id": "alice", "project_id": "cassini", "role": "viewer"}
+  ],
+  "tasks": [
+    {"id": "apo-1", "project_id": "apollo", "title": "Inventariar facturas legadas", "status": "done", "assignee_id": "alice", "version": 1},
+    {"id": "apo-2", "project_id": "apollo", "title": "Mapear esquema de impuestos", "status": "in_progress", "assignee_id": "bob", "version": 1},
+    {"id": "apo-3", "project_id": "apollo", "title": "Plan de corte de servicio", "status": "todo", "assignee_id": null, "version": 1},
+    {"id": "apo-4", "project_id": "apollo", "title": "Validar totales con contabilidad", "status": "blocked", "assignee_id": "carol", "version": 1},
+    {"id": "bor-1", "project_id": "borealis", "title": "Wireframes del onboarding", "status": "in_progress", "assignee_id": "dave", "version": 1},
+    {"id": "bor-2", "project_id": "borealis", "title": "Pruebas de accesibilidad", "status": "todo", "assignee_id": null, "version": 1},
+    {"id": "bor-3", "project_id": "borealis", "title": "Migrar textos legales", "status": "todo", "assignee_id": "bob", "version": 1},
+    {"id": "cas-1", "project_id": "cassini", "title": "Revisar cuentas de servicio", "status": "in_progress", "assignee_id": "carol", "version": 1},
+    {"id": "cas-2", "project_id": "cassini", "title": "Rotar credenciales vencidas", "status": "todo", "assignee_id": null, "version": 1},
+    {"id": "cas-3", "project_id": "cassini", "title": "Informe de hallazgos", "status": "todo", "assignee_id": "carol", "version": 1}
+  ]
+}

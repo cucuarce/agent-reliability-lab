@@ -20,7 +20,7 @@ Python y LangGraph gestiona proyectos mediante tools MCP (`list_projects`, `get_
 | Etapa | Contenido | Estado |
 |---|---|---|
 | 0. Bootstrap | Repo, dependencias fijadas, configuración de Claude Code, hook de protección, tests de contrato | ✅ |
-| 1. Dominio | Modelos, política de autorización, SQLite, servicios | pendiente |
+| 1. Dominio | Modelos, política de autorización, SQLite, ProjectService, idempotencia y auditoría | ✅ |
 | 2. Servidor MCP | 3 tools sobre `MCPServer` (SDK v2) | pendiente |
 | 3. Grafo | `StateGraph` con aprobación por `interrupt()` | pendiente |
 | 4. Robustez | Idempotencia, conflictos de versión, crash/resume | pendiente |
@@ -40,16 +40,48 @@ uv sync                      # crea .venv e instala las versiones fijadas en uv.
 uv run pytest                # todos los tests
 uv run ruff check .          # lint
 uv run ruff format --check . # formato
+uv run pytest --cov=arl --cov-branch  # cobertura
 ```
+
+### Datos
+
+Las bases SQLite viven en `ARL_DATA_DIR`. Por defecto la ruta es `%LOCALAPPDATA%\arl` en Windows
+y `$XDG_DATA_HOME/arl` o `~/.local/share/arl` en el resto. Una ruta dentro de OneDrive se rechaza:
+la sincronización bloquea archivos y puede corromper el WAL de SQLite.
 
 ## Estructura
 
 ```
-src/arl/             Código del producto (agente, servidor MCP, dominio)
+src/arl/domain/      Modelos Pydantic, errores, política de autorización (pura)
+src/arl/storage/     SQLite: schema, repositorios, ledger de idempotencia + auditoría, seed
+src/arl/services/    ProjectService: único punto de acceso al dominio
+tests/unit/          Política, modelos, configuración
+tests/integration/   Servicio contra SQLite real: autorización, versiones, idempotencia, concurrencia
 tests/contracts/     Contratos de las librerías fijadas (SDK MCP v2, LangGraph)
 tests/devtools/      Tests de la infraestructura de Claude Code
 CLAUDE.md, .claude/  Infraestructura de desarrollo con Claude Code (no forma parte del producto)
 ```
+
+## Dominio (etapa 1)
+
+- **Identidad simulada.** `Principal` representa al actor y **no autentica**: solo valida el
+  formato del identificador. Lo construye código de confianza (el entorno del servidor MCP, y más
+  adelante la CLI), nunca un argumento generado por el LLM.
+- **Autorización.** `domain/policy.py` es una tabla fija (rol, acción) → permitido: `viewer`
+  solo lee; `editor` y `owner` pueden modificar tareas; quien no es miembro no ve nada. Un proyecto
+  ajeno y uno inexistente devuelven el mismo `NotFound`.
+- **Escrituras.** `ProjectService.update_task` verifica, dentro de una única transacción
+  `BEGIN IMMEDIATE`: visibilidad → ledger de idempotencia → rol → reglas del cambio → versión
+  esperada. Recién después escribe tarea, auditoría y ledger, que se confirman juntos.
+- **Idempotencia.** La clave se aísla por principal. La misma clave con los mismos parámetros
+  devuelve la respuesta original sin volver a escribir; con otros parámetros devuelve
+  `IdempotencyConflict`. El replay exige visibilidad actual: quien perdió la membresía recibe
+  `NotFound`, nunca la respuesta guardada.
+- **Sin cambios efectivos.** Un patch igual al estado actual devuelve `outcome="unchanged"`, sin
+  versión nueva ni auditoría. Igual exige permiso de escritura y versión vigente, y queda en el
+  ledger para que los reintentos sean coherentes.
+
+Los datos (`src/arl/storage/seed_data.json`) son sintéticos.
 
 El producto (`src/arl/`) y la infraestructura de desarrollo de Claude Code (`CLAUDE.md`, `.claude/`)
 están separados: el producto no importa ni ejecuta nada de `.claude/`.
