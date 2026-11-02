@@ -1,0 +1,32 @@
+# Python / uv
+.venv/
+__pycache__/
+*.py[cod]
+dist/
+build/
+*.egg-info/
+
+# Caches de herramientas
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Secretos: solo se versionan las plantillas
+.env
+.env.*
+!.env.example
+
+# Datos locales (SQLite del dominio y checkpoints)
+var/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite3
+
+# Artefactos de evaluaciones
+evals/reports/
+
+# Configuración personal de Claude Code (no compartida)
+.claude/settings.local.json
+CLAUDE.local.md

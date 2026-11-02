@@ -1,0 +1,2 @@
+# Finales de línea LF en el repo y en el working tree, independientemente de core.autocrlf.
+* text=auto eol=lf
