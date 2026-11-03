@@ -1,0 +1,48 @@
+{
+  "schema": "arl.eval-case/1",
+  "id": "write-noop",
+  "category": "write",
+  "description": "Cambio que ya coincide con el estado: unchanged, sin auditoría.",
+  "principal": "alice",
+  "request": "Marcá apo-1 como done.",
+  "model": {
+    "steps": [
+      {
+        "calls": [
+          {
+            "name": "update_task",
+            "args": {
+              "task_id": "apo-1",
+              "changes": {
+                "status": "done"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "text": "Ya estaba."
+      }
+    ]
+  },
+  "request_scope": {
+    "tasks": [
+      "apo-1"
+    ]
+  },
+  "expected": {
+    "final_status": "completed",
+    "approvals": [
+      {
+        "task_id": "apo-1",
+        "changes": {
+          "status": "done"
+        }
+      }
+    ],
+    "write_states": {
+      "apo-1": "executed"
+    },
+    "update_task_deliveries": 1
+  }
+}

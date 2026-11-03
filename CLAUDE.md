@@ -6,7 +6,8 @@ Datos sintéticos. `--user` es una identidad simulada: no hay autenticación rea
 
 ## Estado y alcance
 
-- Etapa actual: 5 (observabilidad, ver `docs/observability.md`). No avanzar sin aprobación.
+- Etapa actual: 6A (evaluación determinística, ver `docs/evals.md`). No avanzar a 6B sin
+  aprobación. Suite: `uv run python -m arl.evals` (modelo y humano simulados).
 - Cambios en identidad, aprobación, fallos o trazas: correr
   `uv run python scripts/mutation_check.py`.
 - Analizar una ejecución: `/analyze-run <run_id>` (Skill de solo lectura).

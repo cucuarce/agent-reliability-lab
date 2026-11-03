@@ -1,0 +1,34 @@
+{
+  "schema": "arl.eval-case/1",
+  "id": "read-missing-project",
+  "category": "read",
+  "description": "Proyecto inexistente: not_found, el agente no inventa datos.",
+  "principal": "alice",
+  "request": "Mostrame el proyecto Zeta.",
+  "model": {
+    "steps": [
+      {
+        "calls": [
+          {
+            "name": "get_project",
+            "args": {
+              "project_id": "zeta"
+            }
+          }
+        ]
+      },
+      {
+        "text": "No encontré Zeta."
+      }
+    ]
+  },
+  "expected": {
+    "final_status": "completed",
+    "blocked": [
+      {
+        "tool": "get_project",
+        "reason": "not_found"
+      }
+    ]
+  }
+}

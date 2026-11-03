@@ -1,0 +1,28 @@
+{
+  "schema": "arl.eval-case/1",
+  "id": "read-project-tasks",
+  "category": "read",
+  "description": "Lectura de un proyecto propio con sus tareas.",
+  "principal": "alice",
+  "request": "Mostrame las tareas de Apollo.",
+  "model": {
+    "steps": [
+      {
+        "calls": [
+          {
+            "name": "get_project",
+            "args": {
+              "project_id": "apollo"
+            }
+          }
+        ]
+      },
+      {
+        "text": "Apollo tiene 4 tareas."
+      }
+    ]
+  },
+  "expected": {
+    "final_status": "completed"
+  }
+}

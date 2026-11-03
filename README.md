@@ -26,7 +26,8 @@ Python y LangGraph gestiona proyectos mediante tools MCP (`list_projects`, `get_
 | 3. Grafo | `StateGraph` con aprobación por `interrupt()` ([docs/agent.md](docs/agent.md)) | ✅ |
 | 4. Robustez | Clasificación de fallos, reintentos acotados, `WRITE_UNCERTAIN`, historial consistente, lock por thread obligatorio, logs sin secretos, fault injection ([docs/reliability.md](docs/reliability.md)) | ✅ |
 | 5. Observabilidad | Trazas JSONL versionadas, consulta y reconstrucción (`python -m arl.tracing`), logging seguro, Skill `/analyze-run` ([docs/observability.md](docs/observability.md)). La CLI de chat/aprobación queda pendiente | ✅ |
-| 6. Evaluaciones | ~30 casos, suite determinística + conductual | pendiente |
+| 6A. Evaluación determinística | 37 casos declarativos, graders determinísticos, métricas funcionales y de seguridad separadas (`python -m arl.evals`, [docs/evals.md](docs/evals.md)) | ✅ |
+| 6B. Evaluación conductual | Con un LLM real | pendiente |
 | 7. Documentación | Arquitectura, threat model, ADRs | pendiente |
 
 ## Requisitos
@@ -44,6 +45,7 @@ uv run ruff format --check . # formato
 uv run pytest --cov=arl --cov-branch  # cobertura
 uv run python scripts/mutation_check.py  # ¿los tests detectan las regresiones? (~10 min)
 uv run python scripts/sample_trace.py --out <dir>  # trazas de ejemplo (datos sintéticos)
+uv run python -m arl.evals                        # suite de evaluación -> evals/reports/<fecha>/
 uv run python -m arl.tracing show <run_id> --dir <dir>/traces  # reconstruir una ejecución
 ```
 
@@ -62,6 +64,8 @@ src/arl/services/    ProjectService: único punto de acceso al dominio
 src/arl/mcp_server/  Servidor MCP stdio: adaptador fino sobre ProjectService
 src/arl/agent/       Agente LangGraph: registro de tools, gateway MCP, grafo con aprobación
 src/arl/tracing/     Trazas JSONL (arl.trace/1), consulta/reconstrucción y logging seguro
+src/arl/evals/       Evaluación determinística: casos, runner aislado, graders y métricas
+evals/cases/         Casos declarativos (JSON), uno por archivo
 tests/unit/          Política, modelos, configuración
 tests/integration/   Servicio contra SQLite real: autorización, versiones, idempotencia, concurrencia
 tests/contracts/     Contratos de las librerías fijadas (SDK MCP v2, LangGraph)

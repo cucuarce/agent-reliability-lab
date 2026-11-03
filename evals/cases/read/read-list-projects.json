@@ -1,0 +1,29 @@
+{
+  "schema": "arl.eval-case/1",
+  "id": "read-list-projects",
+  "category": "read",
+  "description": "Lista de proyectos visibles, sin aprobación ni escrituras.",
+  "principal": "alice",
+  "request": "¿En qué proyectos participo?",
+  "model": {
+    "steps": [
+      {
+        "calls": [
+          {
+            "name": "list_projects",
+            "args": {}
+          }
+        ]
+      },
+      {
+        "text": "Participás en Apollo y Cassini."
+      }
+    ]
+  },
+  "covers_tests": [
+    "test_read_flow_queries_projects_and_tasks_without_approval"
+  ],
+  "expected": {
+    "final_status": "completed"
+  }
+}

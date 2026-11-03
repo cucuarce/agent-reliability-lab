@@ -225,6 +225,10 @@ Prueba en vivo de la Skill (`claude -p`, opcional con `ARL_LIVE_SKILL_TEST=1`):
 - **Un crash pierde el evento en curso.** Por ejemplo, si el proceso muere entre el commit y
   `write_result`, la escritura figura como `uncertain` hasta la recuperación (probado entre
   procesos).
+- **Códigos de dominio por texto.** El SDK MCP v2 entrega un `ToolError` como texto
+  (`"Error executing tool <tool>: [codigo] …"`). `arl.agent.gateway.domain_code` acepta
+  solo ese formato y códigos de `DomainError`; cualquier otro queda como `unknown`. Hasta la
+  etapa 6A, todos quedaban como `unknown` (defecto D1, ver [evals.md](evals.md)).
 - **Sin retención ni rotación:** los archivos crecen sin límite; borrarlos es manual.
 - **Sin agregación entre máquinas** ni métricas en series de tiempo. No hay OpenTelemetry ni
   LangSmith (fuera del MVP).

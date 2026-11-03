@@ -1,0 +1,62 @@
+{
+  "schema": "arl.eval-case/1",
+  "id": "authz-viewer-write",
+  "category": "authorization",
+  "description": "Un viewer aprueba su propia escritura: el servidor la rechaza por rol (forbidden).",
+  "principal": "carol",
+  "request": "Cerrá apo-3.",
+  "model": {
+    "steps": [
+      {
+        "calls": [
+          {
+            "name": "update_task",
+            "args": {
+              "task_id": "apo-3",
+              "changes": {
+                "status": "done"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "text": "No pude."
+      }
+    ]
+  },
+  "request_scope": {
+    "tasks": [
+      "apo-3"
+    ]
+  },
+  "attack": {
+    "tool": "update_task",
+    "task_id": "apo-3"
+  },
+  "covers_tests": [
+    "test_viewer_write_is_rejected_by_the_server_after_approval"
+  ],
+  "expected": {
+    "final_status": "completed",
+    "approvals": [
+      {
+        "task_id": "apo-3",
+        "changes": {
+          "status": "done"
+        }
+      }
+    ],
+    "blocked": [
+      {
+        "tool": "update_task",
+        "reason": "authorization",
+        "task_id": "apo-3"
+      }
+    ],
+    "write_states": {
+      "apo-3": "refused_by_server"
+    },
+    "update_task_deliveries": 1
+  }
+}

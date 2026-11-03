@@ -1,0 +1,54 @@
+{
+  "schema": "arl.eval-case/1",
+  "id": "authz-viewer-in-other-project",
+  "category": "authorization",
+  "description": "Owner de un proyecto pero viewer de otro: el rol se evalúa por proyecto.",
+  "principal": "alice",
+  "request": "Cerrá cas-2.",
+  "model": {
+    "steps": [
+      {
+        "calls": [
+          {
+            "name": "update_task",
+            "args": {
+              "task_id": "cas-2",
+              "changes": {
+                "status": "done"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "text": "No pude."
+      }
+    ]
+  },
+  "request_scope": {
+    "tasks": [
+      "cas-2"
+    ]
+  },
+  "expected": {
+    "final_status": "completed",
+    "approvals": [
+      {
+        "task_id": "cas-2",
+        "changes": {
+          "status": "done"
+        }
+      }
+    ],
+    "blocked": [
+      {
+        "tool": "update_task",
+        "reason": "authorization",
+        "task_id": "cas-2"
+      }
+    ],
+    "write_states": {
+      "cas-2": "refused_by_server"
+    }
+  }
+}

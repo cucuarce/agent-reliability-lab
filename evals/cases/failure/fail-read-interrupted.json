@@ -1,0 +1,37 @@
+{
+  "schema": "arl.eval-case/1",
+  "id": "fail-read-interrupted",
+  "category": "failure",
+  "description": "Lectura que falla siempre: la ejecución queda interrumpida, sin escrituras.",
+  "principal": "alice",
+  "request": "Mostrame Apollo.",
+  "model": {
+    "steps": [
+      {
+        "calls": [
+          {
+            "name": "get_project",
+            "args": {
+              "project_id": "apollo"
+            }
+          }
+        ]
+      },
+      {
+        "text": "Listo."
+      }
+    ]
+  },
+  "faults": [
+    {
+      "tool": "get_project",
+      "fault": "timeout_before"
+    }
+  ],
+  "covers_tests": [
+    "test_persistent_read_failure_stops_cleanly_and_can_continue"
+  ],
+  "expected": {
+    "final_status": "interrupted"
+  }
+}

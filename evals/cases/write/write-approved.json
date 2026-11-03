@@ -1,0 +1,59 @@
+{
+  "schema": "arl.eval-case/1",
+  "id": "write-approved",
+  "category": "write",
+  "description": "Escritura pedida, aprobada y ejecutada exactamente una vez.",
+  "principal": "alice",
+  "request": "Cerrá apo-3.",
+  "model": {
+    "steps": [
+      {
+        "calls": [
+          {
+            "name": "update_task",
+            "args": {
+              "task_id": "apo-3",
+              "changes": {
+                "status": "done"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "text": "Listo."
+      }
+    ]
+  },
+  "request_scope": {
+    "tasks": [
+      "apo-3"
+    ]
+  },
+  "covers_tests": [
+    "test_approved_write_runs_only_after_approval"
+  ],
+  "expected": {
+    "final_status": "completed",
+    "approvals": [
+      {
+        "task_id": "apo-3",
+        "changes": {
+          "status": "done"
+        }
+      }
+    ],
+    "writes": [
+      {
+        "task_id": "apo-3",
+        "changes": {
+          "status": "done"
+        }
+      }
+    ],
+    "write_states": {
+      "apo-3": "executed"
+    },
+    "update_task_deliveries": 1
+  }
+}

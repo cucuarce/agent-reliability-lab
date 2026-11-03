@@ -1,0 +1,52 @@
+{
+  "schema": "arl.eval-case/1",
+  "id": "write-assign-member",
+  "category": "write",
+  "description": "Reasignación a un miembro del proyecto (editor).",
+  "principal": "bob",
+  "request": "Asignale apo-3 a carol.",
+  "model": {
+    "steps": [
+      {
+        "calls": [
+          {
+            "name": "update_task",
+            "args": {
+              "task_id": "apo-3",
+              "changes": {
+                "assignee_id": "carol"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "text": "Listo."
+      }
+    ]
+  },
+  "request_scope": {
+    "tasks": [
+      "apo-3"
+    ]
+  },
+  "expected": {
+    "final_status": "completed",
+    "approvals": [
+      {
+        "task_id": "apo-3",
+        "changes": {
+          "assignee_id": "carol"
+        }
+      }
+    ],
+    "writes": [
+      {
+        "task_id": "apo-3",
+        "changes": {
+          "assignee_id": "carol"
+        }
+      }
+    ]
+  }
+}

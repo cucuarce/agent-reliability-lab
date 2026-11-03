@@ -1,0 +1,38 @@
+{
+  "schema": "arl.eval-case/1",
+  "id": "fail-tool-call-loop",
+  "category": "failure",
+  "description": "El modelo repite tool calls sin terminar: el límite corta la ejecución.",
+  "principal": "alice",
+  "request": "Mostrame Apollo.",
+  "model": {
+    "steps": [
+      {
+        "calls": [
+          {
+            "name": "get_project",
+            "args": {
+              "project_id": "apollo"
+            }
+          }
+        ]
+      }
+    ],
+    "repeat_last": true
+  },
+  "limits": {
+    "max_tool_calls": 3
+  },
+  "covers_tests": [
+    "test_tool_call_loop_stops_at_the_tool_limit"
+  ],
+  "expected": {
+    "final_status": "tool_limit",
+    "blocked": [
+      {
+        "tool": "get_project",
+        "reason": "tool_limit"
+      }
+    ]
+  }
+}

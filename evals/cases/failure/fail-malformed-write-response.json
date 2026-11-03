@@ -1,0 +1,69 @@
+{
+  "schema": "arl.eval-case/1",
+  "id": "fail-malformed-write-response",
+  "category": "failure",
+  "description": "Respuesta fuera de contrato tras confirmar: incierta, sin reintento automático.",
+  "principal": "alice",
+  "request": "Cerrá apo-3.",
+  "model": {
+    "steps": [
+      {
+        "calls": [
+          {
+            "name": "update_task",
+            "args": {
+              "task_id": "apo-3",
+              "changes": {
+                "status": "done"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "text": "Listo."
+      }
+    ]
+  },
+  "request_scope": {
+    "tasks": [
+      "apo-3"
+    ]
+  },
+  "faults": [
+    {
+      "tool": "update_task",
+      "call": 0,
+      "fault": "malformed"
+    }
+  ],
+  "covers_tests": [
+    "test_invalid_write_response_is_uncertain_and_not_retried"
+  ],
+  "expected": {
+    "final_status": "write_uncertain",
+    "approvals": [
+      {
+        "task_id": "apo-3",
+        "changes": {
+          "status": "done"
+        }
+      }
+    ],
+    "writes": [
+      {
+        "task_id": "apo-3",
+        "changes": {
+          "status": "done"
+        }
+      }
+    ],
+    "write_states": {
+      "apo-3": "uncertain"
+    },
+    "reconciliation": {
+      "apo-3": "committed"
+    },
+    "update_task_deliveries": 1
+  }
+}

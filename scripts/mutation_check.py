@@ -48,6 +48,9 @@ TESTS = [
     "tests/integration/test_tracing.py",
     "tests/integration/test_tracing_cli.py",
     "tests/integration/test_tracing_integrity.py",
+    "tests/integration/test_tracing_domain_codes.py",
+    "tests/unit/test_evals_graders.py",
+    "tests/integration/test_evals_suite.py",
 ]
 COPY_IGNORE = shutil.ignore_patterns(
     ".git", ".venv", "__pycache__", ".pytest_cache", ".ruff_cache", "var", "*.db", "htmlcov"
@@ -60,6 +63,9 @@ REGISTRY = "src/arl/agent/tool_registry.py"
 GATEWAY = "src/arl/agent/gateway.py"
 LOCKS = "src/arl/agent/locks.py"
 REDACTION = "src/arl/agent/redaction.py"
+EVAL_GRADERS = "src/arl/evals/graders.py"
+EVAL_METRICS = "src/arl/evals/metrics.py"
+EVAL_RUNNER = "src/arl/evals/runner.py"
 RECORDER = "src/arl/tracing/recorder.py"
 QUERY = "src/arl/tracing/query.py"
 LOGGING = "src/arl/tracing/logging_setup.py"
@@ -216,6 +222,33 @@ MUTANTS = [
     Mutant("logging: aiosqlite queda en DEBUG", LOGGING,
            "logging.NOTSET if allow_unsafe_debug else max(numeric, logging.INFO)",
            "logging.NOTSET"),
+    Mutant("trazas: el código de dominio ignora el prefijo del SDK (defecto D1)", GATEWAY,
+           '    body = text.removeprefix(f"Error executing tool {tool}: ")', "    body = text"),
+    Mutant("trazas: un código desconocido se registra como de dominio", GATEWAY,
+           "match.group(1) if match and match.group(1) in DOMAIN_CODES else None",
+           "match.group(1) if match else None"),
+    # --- Evaluador (etapa 6A): un grader roto no puede pasar desapercibido ---
+    Mutant("evals: approved_only nunca falla", EVAL_GRADERS,
+           '            all(a["idempotency_key"] in approved for a in own),', "            True,"),
+    Mutant("evals: una escritura incierta reportada como confirmada pasa", EVAL_GRADERS,
+           '                    "uncertain" in states.values(),', "                    True,"),
+    Mutant("evals: falta de trazas cuenta como pass", EVAL_GRADERS,
+           'GraderResult("trace_error_codes", "functional", "not_evaluable", "sin trazas")',
+           'GraderResult("trace_error_codes", "functional", "pass", "sin trazas")'),
+    Mutant("evals: las garantías propuestas cambian el veredicto", EVAL_GRADERS,
+           '    counted = [g for g in graders if g.kind != "proposed"]', "    counted = graders"),
+    Mutant("evals: los casos no evaluables entran al denominador funcional", EVAL_METRICS,
+           '        and all(g["status"] != "not_evaluable" for g in _graders(r, "functional"))\n',
+           ""),
+    Mutant("evals: un ataque bloqueado se clasifica como ejecutado", EVAL_GRADERS,
+           '    return {"outcome": "blocked", "by": reasons or ["not_executed"]}',
+           '    return {"outcome": "executed", "with_human_approval": False}'),
+    Mutant("evals: toda ejecución de un ataque cuenta como insegura", EVAL_METRICS,
+           '        and any(g["status"] == "fail" for g in _graders(r, "safety"))\n',
+           ""),
+    Mutant("evals: el humano atento aprueba todo", EVAL_RUNNER,
+           'return "approve" if request["task_id"] in case.request_scope.tasks else "reject"',
+           'return "approve"'),
 ]  # fmt: skip
 
 

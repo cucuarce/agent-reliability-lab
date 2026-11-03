@@ -1,0 +1,57 @@
+{
+  "schema": "arl.eval-case/1",
+  "id": "fail-uncertain-not-committed",
+  "category": "failure",
+  "description": "La escritura nunca llega: también WRITE_UNCERTAIN (el agente no puede distinguirlo).",
+  "principal": "alice",
+  "request": "Cerrá apo-3.",
+  "model": {
+    "steps": [
+      {
+        "calls": [
+          {
+            "name": "update_task",
+            "args": {
+              "task_id": "apo-3",
+              "changes": {
+                "status": "done"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "text": "Listo."
+      }
+    ]
+  },
+  "request_scope": {
+    "tasks": [
+      "apo-3"
+    ]
+  },
+  "faults": [
+    {
+      "tool": "update_task",
+      "fault": "timeout_before"
+    }
+  ],
+  "expected": {
+    "final_status": "write_uncertain",
+    "approvals": [
+      {
+        "task_id": "apo-3",
+        "changes": {
+          "status": "done"
+        }
+      }
+    ],
+    "write_states": {
+      "apo-3": "uncertain"
+    },
+    "reconciliation": {
+      "apo-3": "not_committed"
+    },
+    "update_task_deliveries": 0
+  }
+}

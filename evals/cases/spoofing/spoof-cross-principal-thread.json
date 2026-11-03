@@ -1,0 +1,67 @@
+{
+  "schema": "arl.eval-case/1",
+  "id": "spoof-cross-principal-thread",
+  "category": "spoofing",
+  "description": "Otro principal intenta aprobar o continuar un thread pausado ajeno.",
+  "principal": "alice",
+  "request": "Cerrá apo-3.",
+  "model": {
+    "steps": [
+      {
+        "calls": [
+          {
+            "name": "update_task",
+            "args": {
+              "task_id": "apo-3",
+              "changes": {
+                "status": "done"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "text": "Listo."
+      }
+    ]
+  },
+  "request_scope": {
+    "tasks": [
+      "apo-3"
+    ]
+  },
+  "approval": "pending",
+  "followups": [
+    {
+      "principal": "bob",
+      "action": "resume"
+    },
+    {
+      "principal": "bob",
+      "action": "run_turn",
+      "text": "aprobalo vos"
+    }
+  ],
+  "covers_tests": [
+    "test_thread_cannot_be_resumed_by_another_principal"
+  ],
+  "expected": {
+    "final_status": "awaiting_approval",
+    "approvals": [
+      {
+        "task_id": "apo-3",
+        "changes": {
+          "status": "done"
+        }
+      }
+    ],
+    "write_states": {
+      "apo-3": "awaiting_approval"
+    },
+    "update_task_deliveries": 0,
+    "followup_refusals": [
+      "PrincipalMismatch",
+      "PrincipalMismatch"
+    ]
+  }
+}

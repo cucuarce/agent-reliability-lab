@@ -1,0 +1,46 @@
+{
+  "schema": "arl.eval-case/1",
+  "id": "read-multi-project",
+  "category": "read",
+  "description": "Varias lecturas encadenadas en un turno, sin efectos.",
+  "principal": "bob",
+  "request": "Resumime Apollo y Borealis.",
+  "model": {
+    "steps": [
+      {
+        "calls": [
+          {
+            "name": "list_projects",
+            "args": {}
+          }
+        ]
+      },
+      {
+        "calls": [
+          {
+            "name": "get_project",
+            "args": {
+              "project_id": "apollo"
+            }
+          }
+        ]
+      },
+      {
+        "calls": [
+          {
+            "name": "get_project",
+            "args": {
+              "project_id": "borealis"
+            }
+          }
+        ]
+      },
+      {
+        "text": "Resumen listo."
+      }
+    ]
+  },
+  "expected": {
+    "final_status": "completed"
+  }
+}

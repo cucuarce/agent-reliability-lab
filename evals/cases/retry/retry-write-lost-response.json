@@ -1,0 +1,66 @@
+{
+  "schema": "arl.eval-case/1",
+  "id": "retry-write-lost-response",
+  "category": "retry",
+  "description": "Se pierde la respuesta de una escritura confirmada: el reintento con la misma clave es un replay, sin duplicar.",
+  "principal": "alice",
+  "request": "Cerrá apo-3.",
+  "model": {
+    "steps": [
+      {
+        "calls": [
+          {
+            "name": "update_task",
+            "args": {
+              "task_id": "apo-3",
+              "changes": {
+                "status": "done"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "text": "Listo."
+      }
+    ]
+  },
+  "request_scope": {
+    "tasks": [
+      "apo-3"
+    ]
+  },
+  "faults": [
+    {
+      "tool": "update_task",
+      "call": 0,
+      "fault": "disconnect_after"
+    }
+  ],
+  "covers_tests": [
+    "test_transient_write_failure_retries_with_the_same_key"
+  ],
+  "expected": {
+    "final_status": "completed",
+    "approvals": [
+      {
+        "task_id": "apo-3",
+        "changes": {
+          "status": "done"
+        }
+      }
+    ],
+    "writes": [
+      {
+        "task_id": "apo-3",
+        "changes": {
+          "status": "done"
+        }
+      }
+    ],
+    "write_states": {
+      "apo-3": "executed"
+    },
+    "update_task_deliveries": 2
+  }
+}

@@ -37,6 +37,7 @@ from mcp_types import CONNECTION_CLOSED, REQUEST_TIMEOUT
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from arl.agent.tool_registry import INJECTED_WRITE_ARGS, REGISTRY, ToolKind
+from arl.domain.errors import DomainError
 from arl.domain.models import ProjectDetail, ProjectSummary, UpdateResult
 from arl.tracing import recorder as tracing
 
@@ -178,6 +179,21 @@ class McpGateway:
 
 
 DOMAIN_CODE = re.compile(r"^\[([a-z_]+)\]")
+# Códigos que produce el servidor (``DomainError.code`` de cada subclase de ``arl.domain.errors``).
+DOMAIN_CODES = frozenset(cls.code for cls in DomainError.__subclasses__())
+
+
+def domain_code(tool: str, text: str) -> str | None:
+    """Código de un error de dominio devuelto por ``tool``, o ``None`` si no se reconoce.
+
+    El SDK MCP v2 entrega un ``ToolError`` solo como texto: ``"Error executing tool <tool>: "``
+    seguido del mensaje, que el servidor arma como ``"[codigo] detalle"``. Se acepta únicamente
+    ese prefijo exacto (o el mensaje sin prefijo) y un código conocido. Nada se infiere: otro
+    prefijo, un código desconocido o un texto malformado devuelven ``None``.
+    """
+    body = text.removeprefix(f"Error executing tool {tool}: ")
+    match = DOMAIN_CODE.match(body)
+    return match.group(1) if match and match.group(1) in DOMAIN_CODES else None
 
 
 def _trace_call(
@@ -195,8 +211,7 @@ def _trace_call(
         tracing.count("mcp_failures")
         data |= {"outcome": failure.code, "code": failure.code, "error_type": failure.error_type}
     elif result is not None and result.is_error:
-        match = DOMAIN_CODE.match(result.text)
-        data |= {"outcome": "domain_error", "code": match.group(1) if match else "unknown"}
+        data |= {"outcome": "domain_error", "code": domain_code(name, result.text) or "unknown"}
     else:
         data["outcome"] = "ok"
         if result is not None and result.data is not None and "replayed" in result.data:

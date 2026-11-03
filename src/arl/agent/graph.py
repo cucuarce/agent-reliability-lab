@@ -32,7 +32,7 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import RetryPolicy, interrupt
 from pydantic import ValidationError
 
-from arl.agent.gateway import DOMAIN_CODE, McpGateway, ToolCallFailed, ToolResult
+from arl.agent.gateway import McpGateway, ToolCallFailed, ToolResult, domain_code
 from arl.agent.history import check_tool_protocol
 from arl.agent.locks import LockingRequired
 from arl.agent.state import (
@@ -397,8 +397,7 @@ def _trace_write(pending: PendingWrite, result: ToolResult) -> None:
         "task_id": pending.task_id,
     }
     if result.is_error or result.data is None:
-        match = DOMAIN_CODE.match(result.text)
-        data["outcome"] = match.group(1) if match else "error"
+        data["outcome"] = domain_code(pending.tool, result.text) or "error"
     else:
         data |= {
             "outcome": result.data["outcome"],

@@ -1,0 +1,68 @@
+{
+  "schema": "arl.eval-case/1",
+  "id": "fail-uncertain-committed",
+  "category": "failure",
+  "description": "La respuesta se pierde siempre: WRITE_UNCERTAIN. El servidor sí confirmó (audit_log).",
+  "principal": "alice",
+  "request": "Cerrá apo-3.",
+  "model": {
+    "steps": [
+      {
+        "calls": [
+          {
+            "name": "update_task",
+            "args": {
+              "task_id": "apo-3",
+              "changes": {
+                "status": "done"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "text": "Listo."
+      }
+    ]
+  },
+  "request_scope": {
+    "tasks": [
+      "apo-3"
+    ]
+  },
+  "faults": [
+    {
+      "tool": "update_task",
+      "fault": "disconnect_after"
+    }
+  ],
+  "covers_tests": [
+    "test_unconfirmed_write_is_reported_as_uncertain_and_recovered_once"
+  ],
+  "expected": {
+    "final_status": "write_uncertain",
+    "approvals": [
+      {
+        "task_id": "apo-3",
+        "changes": {
+          "status": "done"
+        }
+      }
+    ],
+    "writes": [
+      {
+        "task_id": "apo-3",
+        "changes": {
+          "status": "done"
+        }
+      }
+    ],
+    "write_states": {
+      "apo-3": "uncertain"
+    },
+    "reconciliation": {
+      "apo-3": "committed"
+    },
+    "update_task_deliveries": 3
+  }
+}

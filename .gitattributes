@@ -1,2 +1,5 @@
 # Finales de línea LF en el repo y en el working tree, independientemente de core.autocrlf.
 * text=auto eol=lf
+
+# Evidencia histórica: bytes exactos (su SHA-256 está documentado y verificado en los tests).
+evals/baselines/** -text

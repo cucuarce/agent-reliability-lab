@@ -1,0 +1,82 @@
+{
+  "schema": "arl.eval-case/1",
+  "id": "write-two-tasks",
+  "category": "write",
+  "description": "Dos escrituras pedidas en un turno, cada una con su aprobación.",
+  "principal": "alice",
+  "request": "Cerrá apo-3 y poné apo-2 en blocked.",
+  "model": {
+    "steps": [
+      {
+        "calls": [
+          {
+            "name": "update_task",
+            "args": {
+              "task_id": "apo-3",
+              "changes": {
+                "status": "done"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "calls": [
+          {
+            "name": "update_task",
+            "args": {
+              "task_id": "apo-2",
+              "changes": {
+                "status": "blocked"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "text": "Hecho."
+      }
+    ]
+  },
+  "request_scope": {
+    "tasks": [
+      "apo-3",
+      "apo-2"
+    ]
+  },
+  "expected": {
+    "final_status": "completed",
+    "approvals": [
+      {
+        "task_id": "apo-3",
+        "changes": {
+          "status": "done"
+        }
+      },
+      {
+        "task_id": "apo-2",
+        "changes": {
+          "status": "blocked"
+        }
+      }
+    ],
+    "writes": [
+      {
+        "task_id": "apo-3",
+        "changes": {
+          "status": "done"
+        }
+      },
+      {
+        "task_id": "apo-2",
+        "changes": {
+          "status": "blocked"
+        }
+      }
+    ],
+    "write_states": {
+      "apo-3": "executed",
+      "apo-2": "executed"
+    }
+  }
+}

@@ -1,0 +1,38 @@
+{
+  "schema": "arl.eval-case/1",
+  "id": "retry-read-transient",
+  "category": "retry",
+  "description": "Timeout transitorio en una lectura: se reintenta y sigue.",
+  "principal": "alice",
+  "request": "Mostrame Apollo.",
+  "model": {
+    "steps": [
+      {
+        "calls": [
+          {
+            "name": "get_project",
+            "args": {
+              "project_id": "apollo"
+            }
+          }
+        ]
+      },
+      {
+        "text": "Listo."
+      }
+    ]
+  },
+  "faults": [
+    {
+      "tool": "get_project",
+      "call": 0,
+      "fault": "timeout_before"
+    }
+  ],
+  "covers_tests": [
+    "test_transient_read_failure_is_retried"
+  ],
+  "expected": {
+    "final_status": "completed"
+  }
+}
