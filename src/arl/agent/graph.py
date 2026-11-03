@@ -20,6 +20,7 @@ Ningún nodo decide permisos: la autorización es exclusiva del servidor MCP.
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from typing import Any, Protocol, cast
 
@@ -31,7 +32,7 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import RetryPolicy, interrupt
 from pydantic import ValidationError
 
-from arl.agent.gateway import McpGateway, ToolCallFailed, ToolResult
+from arl.agent.gateway import DOMAIN_CODE, McpGateway, ToolCallFailed, ToolResult
 from arl.agent.history import check_tool_protocol
 from arl.agent.locks import LockingRequired
 from arl.agent.state import (
@@ -45,12 +46,14 @@ from arl.agent.state import (
 )
 from arl.agent.tool_registry import (
     REGISTRY,
+    GetProjectArgs,
     InvalidToolCall,
     ToolKind,
     UpdateTaskArgs,
     tool_definitions,
     validate_call,
 )
+from arl.tracing import recorder as tracing
 
 SYSTEM_PROMPT = (
     "Sos un asistente de gestión de proyectos con datos sintéticos. La identidad del usuario la "
@@ -94,9 +97,13 @@ def build_graph(
     limits: Limits | None = None,
     *,
     lock_dir: Path,
+    trace_dir: Path | None = None,
 ) -> CompiledStateGraph:
     """``lock_dir``: directorio de locks por thread (ver ``arl.agent.locks``). Obligatorio: sin él,
-    dos procesos podrían ejecutar el mismo thread a la vez sobre el mismo checkpointer."""
+    dos procesos podrían ejecutar el mismo thread a la vez sobre el mismo checkpointer.
+
+    ``trace_dir``: trazas JSONL de cada ejecución (``arl.tracing``). Opcional y best-effort: sin
+    él no se registran eventos, y un fallo al escribirlos nunca cambia el resultado."""
     if lock_dir is None:
         raise LockingRequired("build_graph requiere lock_dir (lock por thread entre procesos)")
     limits = limits or Limits()
@@ -129,6 +136,8 @@ def build_graph(
         messages: list[BaseMessage] = []
         while queue:
             if used >= limits.max_tool_calls:
+                for call in queue:
+                    _trace_route(call, "tool_limit")
                 messages += [
                     _error_message(call, "tool_limit", "límite de tool calls alcanzado")
                     for call in queue
@@ -137,11 +146,15 @@ def build_graph(
                 return {"queue": [], "messages": messages, "tool_calls_used": used,
                         "status": "tool_limit"}  # fmt: skip
             try:
-                validate_call(queue[0]["name"], queue[0]["args"])
-                break
+                spec, args = validate_call(queue[0]["name"], queue[0]["args"])
             except InvalidToolCall as exc:
+                _trace_route(queue[0], "invalid_tool_call")
                 messages.append(_error_message(queue.pop(0), "invalid_tool_call", str(exc)))
                 used += 1
+                continue
+            decision = "execute" if spec.kind is ToolKind.READ else "requires_approval"
+            _trace_route(queue[0], decision, args)
+            break
         return {"queue": queue, "messages": messages, "tool_calls_used": used}
 
     def await_approval(state: AgentState) -> dict[str, Any]:
@@ -153,15 +166,29 @@ def build_graph(
         """
         pending = PendingWrite.model_validate(state["pending_write"])
         raw = interrupt(pending.approval_request())
+        ids = {
+            "action_id": pending.action_id,
+            "tool_call_id": tracing.safe_id(pending.tool_call_id),
+        }
+        invalid = ids | {"decision": "invalid"}
         if state.get("principal_id") != gateway.principal_id:
+            tracing.emit("approval_decided", **invalid, invalid_reason="principal")
             return {"approval": None, "approval_error": "principal distinto del dueño del thread"}
         try:
             decision = ApprovalDecision.model_validate(raw)
         except ValidationError as exc:
+            tracing.emit("approval_decided", **invalid, invalid_reason="schema")
             fields = ", ".join(".".join(map(str, e["loc"])) or "(raíz)" for e in exc.errors())
             return {"approval": None, "approval_error": f"decisión inválida: {fields}"}
         if not decision.matches(pending):
+            tracing.emit("approval_decided", **invalid, invalid_reason="other_action")
             return {"approval": None, "approval_error": "la decisión corresponde a otra acción"}
+        tracing.emit(
+            "approval_decided",
+            **ids,
+            decision=decision.decision,
+            with_reason=decision.reason is not None,
+        )
         return {"approval": decision.model_dump(), "approval_error": None}
 
     def record_rejection(state: AgentState) -> dict[str, Any]:
@@ -184,7 +211,27 @@ def build_graph(
             return {"messages": [AIMessage(TURN_LIMIT_REPLY)], "queue": [], "status": "turn_limit"}
         # Última barrera: un proveedor real rechaza tool calls sin respuesta; nunca se le envían.
         check_tool_protocol(state["messages"])
-        response = await llm.ainvoke([SystemMessage(SYSTEM_PROMPT), *state["messages"]])
+        turn = state["model_turns"] + 1
+        start = time.perf_counter()
+        tracing.count("model_calls")
+        try:
+            response = await llm.ainvoke([SystemMessage(SYSTEM_PROMPT), *state["messages"]])
+        except Exception as exc:
+            tracing.emit(
+                "model_call", model_turn=turn, duration_ms=tracing.elapsed_ms(start),
+                outcome="error", error_type=type(exc).__name__,
+            )  # fmt: skip
+            raise
+        tracing.emit(
+            "model_call",
+            model_turn=turn,
+            duration_ms=tracing.elapsed_ms(start),
+            outcome="ok",
+            tool_calls=[
+                {"tool_call_id": tracing.safe_id(c["id"]), "tool": tracing.safe_id(c["name"])}
+                for c in response.tool_calls
+            ],
+        )
         queue = [
             {"id": call["id"], "name": call["name"], "args": call["args"]}
             for call in response.tool_calls
@@ -192,7 +239,7 @@ def build_graph(
         return {
             "messages": [response],
             "queue": queue,
-            "model_turns": state["model_turns"] + 1,
+            "model_turns": turn,
             "status": "running" if queue else "completed",
         }
 
@@ -200,7 +247,8 @@ def build_graph(
         check_principal(state)
         call, *rest = state["queue"]
         _, args = validate_call(call["name"], call["args"])
-        result = await gateway.call(call["name"], args.model_dump(mode="json"))
+        with tracing.step("execute_read", call["id"]):
+            result = await gateway.call(call["name"], args.model_dump(mode="json"))
         return {
             "queue": rest,
             "messages": [_tool_message(call["id"], call["name"], result)],
@@ -214,7 +262,8 @@ def build_graph(
         args = cast(UpdateTaskArgs, validate_call(call["name"], call["args"])[1])
         update: dict[str, Any] = {"queue": rest, "tool_calls_used": state["tool_calls_used"] + 1}
 
-        located = await _locate_task(gateway, args.task_id)
+        with tracing.step("prepare_write", call["id"]):
+            located = await _locate_task(gateway, args.task_id)
         if located is None:
             detail = f"tarea '{args.task_id}' no encontrada"
             return update | {"messages": [_error_message(call, "not_found", detail)]}
@@ -234,6 +283,13 @@ def build_graph(
             expected_version=task["version"],
             idempotency_key=key,
         )
+        tracing.emit(
+            "approval_requested",
+            **pending.model_dump(include={"action_id", "args_hash", "task_id", "project_id",
+                                          "my_role", "expected_version", "tool"}),
+            tool_call_id=tracing.safe_id(call["id"]),
+            changed_fields=sorted(changes),
+        )  # fmt: skip
         return update | {
             "pending_write": pending.model_dump(),
             "approval": None,
@@ -247,7 +303,9 @@ def build_graph(
         decision = ApprovalDecision.model_validate(state["approval"])
         if decision.decision != "approve" or not decision.matches(pending):
             raise ApprovalMismatch("execute_write sin una aprobación válida para esta acción")
-        result = await gateway.call(pending.tool, pending.server_arguments())
+        with tracing.step("execute_write", pending.tool_call_id):
+            result = await gateway.call(pending.tool, pending.server_arguments())
+        _trace_write(pending, result)
         return {
             "messages": [_tool_message(pending.tool_call_id, pending.tool, result)],
             "pending_write": None,
@@ -310,9 +368,45 @@ def build_graph(
             "configurable": {
                 "principal_id": gateway.principal_id,
                 "lock_dir": str(lock_dir),
+                "trace_dir": str(trace_dir) if trace_dir else None,
             },
         }
     )
+
+
+def _trace_route(call: dict[str, Any], decision: str, args: Any = None) -> None:
+    """Evento ``tool_call_routed``: lo que pidió el LLM, sin valores (solo ids y nombres)."""
+    data: dict[str, Any] = {
+        "tool_call_id": tracing.safe_id(call["id"]),
+        "tool": tracing.safe_id(call["name"]),
+        "decision": decision,
+    }
+    if isinstance(args, GetProjectArgs):
+        data["project_id"] = args.project_id
+    elif isinstance(args, UpdateTaskArgs):
+        data |= {"task_id": args.task_id, "changed_fields": sorted(args.changes.changes())}
+    tracing.emit("tool_call_routed", **data)
+
+
+def _trace_write(pending: PendingWrite, result: ToolResult) -> None:
+    """Evento ``write_result``: lo que el servidor confirma que ejecutó (o rechazó)."""
+    data: dict[str, Any] = {
+        "action_id": pending.action_id,
+        "idempotency_key": pending.idempotency_key,
+        "tool_call_id": tracing.safe_id(pending.tool_call_id),
+        "task_id": pending.task_id,
+    }
+    if result.is_error or result.data is None:
+        match = DOMAIN_CODE.match(result.text)
+        data["outcome"] = match.group(1) if match else "error"
+    else:
+        data |= {
+            "outcome": result.data["outcome"],
+            "replayed": result.data["replayed"],
+            "version": result.data["task"]["version"],
+            "audit_id": result.data["audit_id"],
+        }
+    tracing.emit("write_result", **data)
 
 
 async def _locate_task(gateway: McpGateway, task_id: str) -> tuple[str, str, dict[str, Any]] | None:

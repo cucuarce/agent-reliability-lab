@@ -99,14 +99,14 @@ async def test_failed_turn_logs_trace_operation_and_type_without_secrets(
         state = await graph.aget_state(thread_config("t-log"))
 
     assert result.status is TurnStatus.INTERRUPTED
-    assert result.trace_id
+    assert result.run_id
     for text in (caplog.text, str(result), str(state.values)):
         assert SECRET not in text and "secretos" not in text
     retries = [r for r in caplog.records if r.exc_info and r.name.startswith("langgraph")]
     assert retries, "LangGraph debería registrar los reintentos con su traceback"
     (stopped,) = [r for r in caplog.records if r.name == LOGGER.name]
     message = stopped.getMessage()
-    for expected in (result.trace_id, "list_projects", "unavailable", "OSError", "t-log"):
+    for expected in (result.run_id, "list_projects", "unavailable", "OSError", "t-log"):
         assert expected in message
 
 
@@ -143,5 +143,5 @@ def test_redact_masks_common_secret_shapes(text: str) -> None:
 
 
 def test_redact_keeps_ordinary_diagnostics() -> None:
-    text = "[unavailable] update_task: transporte no disponible (OSError) trace_id=abc123"
+    text = "[unavailable] update_task: transporte no disponible (OSError) run_id=abc123"
     assert redact(text) == text

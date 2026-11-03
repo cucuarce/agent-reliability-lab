@@ -23,7 +23,9 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -36,6 +38,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 
 from arl.agent.tool_registry import INJECTED_WRITE_ARGS, REGISTRY, ToolKind
 from arl.domain.models import ProjectDetail, ProjectSummary, UpdateResult
+from arl.tracing import recorder as tracing
 
 DEFAULT_CALL_TIMEOUT_S = 10.0
 _TRANSPORT_ERRORS = (
@@ -140,6 +143,16 @@ class McpGateway:
     async def call(self, name: str, arguments: dict[str, Any]) -> ToolResult:
         if name not in REGISTRY:
             raise ValueError(f"tool fuera del registro: {name}")
+        start = time.perf_counter()
+        try:
+            result = await self._call(name, arguments)
+        except ToolCallFailed as exc:
+            _trace_call(name, arguments, start, failure=exc)
+            raise
+        _trace_call(name, arguments, start, result=result)
+        return result
+
+    async def _call(self, name: str, arguments: dict[str, Any]) -> ToolResult:
         failure: ToolCallFailed | None = None
         try:
             result = await self._client.call_tool(
@@ -162,6 +175,36 @@ class McpGateway:
                 raise ToolUnavailable(name, "error interno del servidor")
             return ToolResult(True, text, None)
         return ToolResult(False, text, _validate_output(name, arguments, result.structured_content))
+
+
+DOMAIN_CODE = re.compile(r"^\[([a-z_]+)\]")
+
+
+def _trace_call(
+    name: str,
+    arguments: dict[str, Any],
+    start: float,
+    *,
+    failure: ToolCallFailed | None = None,
+    result: ToolResult | None = None,
+) -> None:
+    """Evento ``mcp_call``: identificadores, resultado y duración; nunca argumentos ni textos."""
+    tracing.count("mcp_calls")
+    data: dict[str, Any] = {"tool": name, "duration_ms": tracing.elapsed_ms(start)}
+    if failure is not None:
+        tracing.count("mcp_failures")
+        data |= {"outcome": failure.code, "code": failure.code, "error_type": failure.error_type}
+    elif result is not None and result.is_error:
+        match = DOMAIN_CODE.match(result.text)
+        data |= {"outcome": "domain_error", "code": match.group(1) if match else "unknown"}
+    else:
+        data["outcome"] = "ok"
+        if result is not None and result.data is not None and "replayed" in result.data:
+            data["replayed"] = result.data["replayed"]
+    for key in ("project_id", "task_id", "idempotency_key"):
+        if key in arguments:
+            data[key] = tracing.safe_id(arguments[key])
+    tracing.emit("mcp_call", **data, **tracing.current_step())
 
 
 def _classify_mcp_error(name: str, code: int) -> ToolCallFailed:

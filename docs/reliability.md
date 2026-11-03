@@ -192,7 +192,7 @@ barrera.
 ## Chequeo de mutaciones
 
 ```bash
-uv run python scripts/mutation_check.py            # 34 mutantes (unos 8 minutos)
+uv run python scripts/mutation_check.py            # 45 mutantes (unos 10 minutos)
 uv run python scripts/mutation_check.py --list     # qué regresión reintroduce cada uno
 uv run python scripts/mutation_check.py -k gateway --all-failures
 uv run python scripts/mutation_check.py --baseline-only
@@ -202,12 +202,14 @@ uv run python scripts/mutation_check.py --baseline-only
   importe desde ella. El árbol de trabajo nunca se modifica.
 - **Línea base obligatoria:** si la suite sin mutar falla en la copia, aborta (exit 2). Un test
   roto haría pasar por "detectados" mutantes que en realidad no detecta.
-- Si un fragmento ya no coincide con el código, aborta en lugar de reportar un falso "KILLED".
+- Si un fragmento ya no coincide con el código, o el mutante no compila, aborta en lugar de
+  reportar un falso "KILLED". El chequeo de compilación se agregó en la etapa 5, después de que
+  un mutante con un `SyntaxError` apareciera como "detectado".
 - Estas propiedades tienen tests propios (`tests/unit/test_mutation_check.py`), que ejecutan el
   script real sobre un repositorio mínimo: una línea base rota da exit 2 sin aplicar mutantes; un
-  fragmento desactualizado da exit 2; un sobreviviente da exit 1; el árbol original queda idéntico
+  fragmento desactualizado o un mutante que no compila dan exit 2; un sobreviviente da exit 1; el árbol original queda idéntico
   (hash).
-- Resultado actual: **34/34 detectados**.
+- Resultado actual: **45/45 detectados** (34 de etapas 3–4 y 11 de observabilidad e integridad de trazas).
 
 ## Riesgos pendientes (no cubiertos)
 
@@ -231,9 +233,10 @@ uv run python scripts/mutation_check.py --baseline-only
   (más allá de `busy_timeout`).
 - **Reconciliación de `WRITE_UNCERTAIN`** ante respuestas inválidas persistentes: es manual
   (consultar el ledger por la clave). No hay un comando para cerrar el estado; llegará con la CLI.
-- **Logs:** todavía no hay observabilidad propia (etapa 5). La verificación cubre los logs de
-  LangGraph, del SDK y de `arl.agent` a nivel DEBUG en los tests, no un pipeline de logs. La
-  redacción es heurística.
+- **Logs:** la verificación cubre los logs de LangGraph, del SDK y de `arl.agent` a nivel DEBUG
+  en los tests, no un pipeline de logs. La redacción es heurística. Las trazas de la etapa 5
+  están en [observability.md](observability.md).
 - **`aiosqlite` a nivel DEBUG vuelca los checkpoints completos**: mensajes, resultados de tools y
   metadatos como la ruta de `lock_dir`. Lo observamos en los tests. No contiene secretos porque el
-  estado no los tiene, pero el DEBUG de `aiosqlite` no debe activarse fuera del desarrollo.
+  estado no los tiene. **Resuelto en la etapa 5:** `configure_logging` deja `aiosqlite` en INFO
+  como mínimo (ver [observability.md](observability.md#logging)).

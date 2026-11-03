@@ -3,7 +3,7 @@
 La primera barrera es no producir texto sensible: el gateway lanza excepciones con mensajes fijos
 y sin ``__cause__`` ni ``__context__`` (ver ``McpGateway.call``). Este filtro cubre lo que se
 escape igual: enmascara formas habituales de secretos en el mensaje, los argumentos y el
-traceback de cada registro del logger ``arl.agent``. Conserva tipo de error, operación y trace_id.
+traceback de cada registro del logger ``arl.agent``. Conserva tipo de error, operación y run_id.
 
 Es heurístico: un secreto sin forma reconocible (sin ``password=``, ``Bearer``, ``sk-``...) no
 se detecta. Por eso no reemplaza a la primera barrera.

@@ -4,6 +4,7 @@ Contexto de ejecución confiable (lo fija quien lanza el proceso, no el LLM):
 
 - ``ARL_PRINCIPAL``: identidad **simulada** del usuario. No hay autenticación real.
 - ``ARL_DATA_DIR`` / ``ARL_DB_NAME``: ubicación de la base (ver ``arl.config``).
+- ``ARL_LOG_LEVEL``: nivel de log a stderr (por defecto WARNING).
 
 El proceso valida la configuración al arrancar y falla rápido (exit 2) si algo no cuadra.
 stdout queda reservado al protocolo MCP: los diagnósticos van a stderr.
@@ -24,6 +25,7 @@ from arl.domain.models import Principal
 from arl.mcp_server.server import create_server
 from arl.storage import repositories
 from arl.storage.db import SCHEMA_VERSION, connect
+from arl.tracing.logging_setup import LOG_LEVEL_ENV, configure_logging
 
 PRINCIPAL_ENV = "ARL_PRINCIPAL"
 
@@ -53,6 +55,12 @@ def build_from_env(env: Mapping[str, str]) -> MCPServer:
 
 
 def main() -> int:
+    try:
+        # Logs a stderr, redactados y sin el DEBUG de aiosqlite (ver arl.tracing.logging_setup).
+        configure_logging(os.environ.get(LOG_LEVEL_ENV, "WARNING"))
+    except ValueError as exc:
+        print(f"arl.mcp_server: {exc}", file=sys.stderr)
+        return 2
     try:
         server = build_from_env(os.environ)
     except ConfigError as exc:

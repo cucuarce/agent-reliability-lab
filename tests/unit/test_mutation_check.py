@@ -95,3 +95,11 @@ def test_surviving_mutant_fails_the_check(fake_repo: Path, monkeypatch, capsys) 
     code, out = _run(monkeypatch, capsys, fake_repo, new="VALUE = 1  # sin cambio")
     assert code == 1
     assert "SURVIVED" in out
+
+
+def test_mutant_that_does_not_compile_aborts_instead_of_counting_as_killed(
+    fake_repo: Path, monkeypatch, capsys
+) -> None:
+    code, out = _run(monkeypatch, capsys, fake_repo, new="VALUE = = 2")
+    assert code == 2
+    assert "no es Python válido" in out and "KILLED" not in out

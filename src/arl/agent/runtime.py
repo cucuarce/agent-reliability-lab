@@ -5,11 +5,14 @@ sin ``lock_dir`` falla con ``LockingRequired``) y verifica, antes de leer o escr
 thread pertenezca al principal del proceso. La identidad no es un parámetro: es la del
 proceso, ligada al grafo en ``build_graph`` a partir del gateway MCP. Invocar el grafo
 directamente queda fuera del modelo de seguridad (ver docs/agent.md).
+
+Cada llamada a ``run_turn``, ``resume`` o ``continue_after_failure`` es una ejecución (``run_id``)
+con eventos de traza best-effort: ``run_started`` ... ``run_finished`` (ver docs/observability.md).
 """
 
 from __future__ import annotations
 
-import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path
@@ -24,6 +27,8 @@ from arl.agent.history import close_unanswered
 from arl.agent.locks import LockingRequired, ThreadBusy, thread_lock
 from arl.agent.redaction import LOGGER
 from arl.agent.state import ApprovalDecision, ApprovalMismatch, PendingWrite, PrincipalMismatch
+from arl.tracing import recorder as tracing
+from arl.tracing.recorder import JsonlTraceSink, RunContext
 
 # Cada superpaso se persiste antes del siguiente: tras un crash se reanuda desde el último nodo
 # completado y nunca se pierde una aprobación ya registrada.
@@ -68,7 +73,7 @@ class TurnResult:
     approval_error: str | None = None  # por qué se rechazó la última decisión entregada
     error: str | None = None  # código y detalle seguro del fallo que detuvo la ejecución
     pending_action: dict[str, Any] | None = None  # la escritura aprobada sin confirmar
-    trace_id: str | None = None  # correlaciona el resultado con el log de la ejecución
+    run_id: str | None = None  # correlaciona el resultado con sus trazas y el log
 
 
 def thread_config(thread_id: str) -> dict[str, Any]:
@@ -98,26 +103,102 @@ def _lock_dir(graph: CompiledStateGraph) -> Path:
     return Path(value)
 
 
-async def _invoke(graph: CompiledStateGraph, payload: Any, thread_id: str) -> TurnResult:
+def _trace_sink(graph: CompiledStateGraph) -> JsonlTraceSink | None:
+    value = graph.config["configurable"].get("trace_dir")
+    return JsonlTraceSink(Path(value)) if value else None
+
+
+# Rechazos esperables del runtime: la ejecución no llegó a correr (estado final ``refused``).
+_REFUSALS = (
+    LockingRequired,
+    PrincipalMismatch,
+    ApprovalMismatch,
+    ThreadAwaitingApproval,
+    NoPendingApproval,
+    ThreadNeedsRecovery,
+    NothingToContinue,
+)
+
+
+async def _traced(
+    graph: CompiledStateGraph,
+    thread_id: str,
+    operation: str,
+    body: Callable[[RunContext], Awaitable[TurnResult]],
+) -> TurnResult:
+    """Una ejecución observable: ``run_started`` y siempre ``run_finished`` (salvo crash del
+    proceso), con el estado final, la duración y los conteos. Las excepciones se re-lanzan."""
+    sink = _trace_sink(graph)
+    with tracing.run_scope(sink, thread_id=thread_id, principal_id=bound_principal(graph)) as run:
+        run.emit("run_started", {"operation": operation})
+
+        def finish(status: str, refusal: str | None = None) -> None:
+            run.emit(
+                "run_finished",
+                {
+                    "operation": operation,
+                    "status": status,
+                    "duration_ms": tracing.elapsed_ms(run.started),
+                    "refusal": refusal,
+                    "failure": run.failure,
+                    "counts": run.snapshot_counts().model_dump(),
+                },
+            )
+
+        try:
+            result = await body(run)
+        except ThreadBusy:
+            finish(TurnStatus.BUSY, refusal="ThreadBusy")
+            raise
+        except _REFUSALS as exc:
+            finish("refused", refusal=type(exc).__name__)
+            raise
+        except BaseException as exc:
+            run.failure = run.failure or {
+                "code": "unhandled",
+                "operation": operation,
+                "error_type": tracing.safe_id(type(exc).__name__),
+            }
+            finish("error")
+            raise
+        finish(result.status)
+        return replace(result, run_id=run.run_id)
+
+
+async def _invoke(
+    graph: CompiledStateGraph, payload: Any, thread_id: str, run: RunContext
+) -> TurnResult:
     """Ejecuta el grafo y convierte los fallos del MCP en un estado claro y reanudable.
 
     Los reintentos automáticos (acotados) ya ocurrieron dentro del nodo; si se agotaron o el
     fallo es definitivo, el checkpoint queda antes del nodo fallido. Se llama con el lock del
-    thread tomado. El log lleva diagnóstico (operación, código, tipo de error, trace_id), nunca
+    thread tomado. El log lleva diagnóstico (operación, código, tipo de error, run_id), nunca
     el texto del error original.
     """
-    trace_id = uuid.uuid4().hex[:16]
-    config = {**thread_config(thread_id), "metadata": {"trace_id": trace_id}}
+    config = {**thread_config(thread_id), "metadata": {"run_id": run.run_id}}
     try:
         await graph.ainvoke(payload, config, durability=DURABILITY)
     except ToolCallFailed as exc:
         result = await _result(graph, thread_id)
+        run.failure = {"code": exc.code, "operation": exc.tool, "error_type": exc.error_type}
         LOGGER.warning(
-            "ejecución detenida trace_id=%s thread=%s operation=%s code=%s error_type=%s status=%s",
-            trace_id, thread_id, exc.tool, exc.code, exc.error_type, result.status,
+            "ejecución detenida run_id=%s thread=%s operation=%s code=%s error_type=%s status=%s",
+            run.run_id, thread_id, exc.tool, exc.code, exc.error_type, result.status,
         )  # fmt: skip
-        return replace(result, error=f"[{exc.code}] {exc.tool}", trace_id=trace_id)
-    return replace(await _result(graph, thread_id), trace_id=trace_id)
+        if result.status is TurnStatus.WRITE_UNCERTAIN and result.pending_action:
+            action = result.pending_action
+            run.emit(
+                "write_uncertain",
+                {
+                    "action_id": action["action_id"],
+                    "idempotency_key": action["idempotency_key"],
+                    "tool_call_id": tracing.safe_id(action["tool_call_id"]),
+                    "task_id": action["task_id"],
+                    "failure": run.failure,
+                },
+            )
+        return replace(result, error=f"[{exc.code}] {exc.tool}")
+    return await _result(graph, thread_id)
 
 
 async def run_turn(graph: CompiledStateGraph, *, thread_id: str, text: str) -> TurnResult:
@@ -129,34 +210,55 @@ async def run_turn(graph: CompiledStateGraph, *, thread_id: str, text: str) -> T
     - lectura o preparación interrumpida → sus tool calls se cierran con ``[not_executed]``
       antes del mensaje nuevo (no tuvieron efectos).
     """
-    with thread_lock(_lock_dir(graph), thread_id):
-        snapshot = await graph.aget_state(thread_config(thread_id))
-        principal_id = _check_owner(graph, snapshot.values)  # antes de escribir en el thread
-        if snapshot.interrupts:
-            raise ThreadAwaitingApproval(f"el thread '{thread_id}' tiene una aprobación pendiente")
-        if snapshot.next == ("execute_write",):
-            raise ThreadNeedsRecovery(f"el thread '{thread_id}' requiere continue_after_failure")
-        closed = close_unanswered(snapshot.values.get("messages", []))
-        payload = {"messages": [*closed, HumanMessage(text)], "principal_id": principal_id}
-        return await _invoke(graph, payload, thread_id)
+
+    async def body(run: RunContext) -> TurnResult:
+        with thread_lock(_lock_dir(graph), thread_id):
+            snapshot = await graph.aget_state(thread_config(thread_id))
+            principal_id = _check_owner(graph, snapshot.values)  # antes de escribir en el thread
+            if snapshot.interrupts:
+                raise ThreadAwaitingApproval(
+                    f"el thread '{thread_id}' tiene una aprobación pendiente"
+                )
+            if snapshot.next == ("execute_write",):
+                raise ThreadNeedsRecovery(
+                    f"el thread '{thread_id}' requiere continue_after_failure"
+                )
+            closed = close_unanswered(snapshot.values.get("messages", []))
+            if closed:
+                run.emit(
+                    "history_closed",
+                    {
+                        "tool_call_ids": [tracing.safe_id(m.tool_call_id) for m in closed],
+                        "reason": "not_executed",
+                    },
+                )
+            payload = {"messages": [*closed, HumanMessage(text)], "principal_id": principal_id}
+            return await _invoke(graph, payload, thread_id, run)
+
+    return await _traced(graph, thread_id, "run_turn", body)
 
 
 async def resume(
     graph: CompiledStateGraph, *, thread_id: str, decision: ApprovalDecision
 ) -> TurnResult:
     """Entrega la decisión humana. Se valida antes de tocar el grafo; el nodo vuelve a validar."""
-    with thread_lock(_lock_dir(graph), thread_id):
-        snapshot = await graph.aget_state(thread_config(thread_id))
-        if not snapshot.interrupts:
-            raise NoPendingApproval(f"el thread '{thread_id}' no espera ninguna aprobación")
-        _check_owner(graph, snapshot.values)
-        request = snapshot.interrupts[0].value
-        if (decision.action_id, decision.args_hash) != (
-            request["action_id"],
-            request["args_hash"],
-        ):
-            raise ApprovalMismatch("la decisión no corresponde a la acción pendiente")
-        return await _invoke(graph, Command(resume=decision.model_dump()), thread_id)
+
+    async def body(run: RunContext) -> TurnResult:
+        with thread_lock(_lock_dir(graph), thread_id):
+            snapshot = await graph.aget_state(thread_config(thread_id))
+            if not snapshot.interrupts:
+                raise NoPendingApproval(f"el thread '{thread_id}' no espera ninguna aprobación")
+            _check_owner(graph, snapshot.values)
+            request = snapshot.interrupts[0].value
+            if (decision.action_id, decision.args_hash) != (
+                request["action_id"],
+                request["args_hash"],
+            ):
+                raise ApprovalMismatch("la decisión no corresponde a la acción pendiente")
+            command = Command(resume=decision.model_dump())
+            return await _invoke(graph, command, thread_id, run)
+
+    return await _traced(graph, thread_id, "resume", body)
 
 
 async def continue_after_failure(graph: CompiledStateGraph, *, thread_id: str) -> TurnResult:
@@ -165,16 +267,32 @@ async def continue_after_failure(graph: CompiledStateGraph, *, thread_id: str) -
     Nunca se saltea la aprobación: si el fallo ocurrió antes de aprobar, se vuelve a pedir; si
     ocurrió en execute_write, se reintenta la acción ya aprobada con la misma clave.
     """
-    with thread_lock(_lock_dir(graph), thread_id):
-        snapshot = await graph.aget_state(thread_config(thread_id))
-        _check_owner(graph, snapshot.values)
-        if snapshot.interrupts:
-            raise ThreadAwaitingApproval(
-                f"el thread '{thread_id}' espera una decisión, no un reintento"
+
+    async def body(run: RunContext) -> TurnResult:
+        with thread_lock(_lock_dir(graph), thread_id):
+            snapshot = await graph.aget_state(thread_config(thread_id))
+            _check_owner(graph, snapshot.values)
+            if snapshot.interrupts:
+                raise ThreadAwaitingApproval(
+                    f"el thread '{thread_id}' espera una decisión, no un reintento"
+                )
+            if not snapshot.next:
+                raise NothingToContinue(
+                    f"el thread '{thread_id}' no tiene una ejecución interrumpida"
+                )
+            uncertain = snapshot.next == ("execute_write",)
+            pending = snapshot.values.get("pending_write") if uncertain else None
+            run.emit(
+                "recovery_started",
+                {
+                    "prior_status": "write_uncertain" if uncertain else "interrupted",
+                    "resume_node": snapshot.next[0],
+                    "action_id": pending["action_id"] if pending else None,
+                },
             )
-        if not snapshot.next:
-            raise NothingToContinue(f"el thread '{thread_id}' no tiene una ejecución interrumpida")
-        return await _invoke(graph, None, thread_id)
+            return await _invoke(graph, None, thread_id, run)
+
+    return await _traced(graph, thread_id, "continue_after_failure", body)
 
 
 async def turn_result(graph: CompiledStateGraph, thread_id: str) -> TurnResult:
@@ -207,7 +325,10 @@ async def _result(graph: CompiledStateGraph, thread_id: str) -> TurnResult:
     if snapshot.next == ("execute_write",):  # la escritura aprobada no llegó a confirmarse
         pending = PendingWrite.model_validate(values["pending_write"])
         # La clave permite reconciliar a mano (ledger y auditoría del servidor la registran).
-        action = pending.approval_request() | {"idempotency_key": pending.idempotency_key}
+        action = pending.approval_request() | {
+            "idempotency_key": pending.idempotency_key,
+            "tool_call_id": pending.tool_call_id,
+        }
         return TurnResult(TurnStatus.WRITE_UNCERTAIN, reply, pending_action=action)
     if snapshot.next or values.get("status") == "running":  # ejecución que no terminó
         return TurnResult(TurnStatus.INTERRUPTED, reply)

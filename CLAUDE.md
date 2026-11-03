@@ -6,8 +6,10 @@ Datos sintéticos. `--user` es una identidad simulada: no hay autenticación rea
 
 ## Estado y alcance
 
-- Etapa actual: 4 (tolerancia a fallos, ver `docs/reliability.md`). No avanzar sin aprobación.
-- Cambios en identidad, aprobación o fallos: correr `uv run python scripts/mutation_check.py`.
+- Etapa actual: 5 (observabilidad, ver `docs/observability.md`). No avanzar sin aprobación.
+- Cambios en identidad, aprobación, fallos o trazas: correr
+  `uv run python scripts/mutation_check.py`.
+- Analizar una ejecución: `/analyze-run <run_id>` (Skill de solo lectura).
 - Fuera del MVP: RAG, multiagentes, frontend, despliegue cloud, LangSmith, OpenTelemetry.
 
 ## Dos mundos separados

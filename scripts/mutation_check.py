@@ -15,7 +15,8 @@ Uso:
     uv run python scripts/mutation_check.py --list
     uv run python scripts/mutation_check.py -k runtime --all-failures
 
-Exit: 0 todos detectados, 1 hay sobrevivientes, 2 abortado (línea base o fragmento inválido).
+Exit: 0 todos detectados, 1 hay sobrevivientes, 2 abortado (línea base, fragmento inválido o
+mutante que no compila).
 """
 
 from __future__ import annotations
@@ -44,6 +45,9 @@ TESTS = [
     "tests/integration/test_agent_history.py",
     "tests/integration/test_agent_log_safety.py",
     "tests/integration/test_agent_uncertain.py",
+    "tests/integration/test_tracing.py",
+    "tests/integration/test_tracing_cli.py",
+    "tests/integration/test_tracing_integrity.py",
 ]
 COPY_IGNORE = shutil.ignore_patterns(
     ".git", ".venv", "__pycache__", ".pytest_cache", ".ruff_cache", "var", "*.db", "htmlcov"
@@ -56,6 +60,9 @@ REGISTRY = "src/arl/agent/tool_registry.py"
 GATEWAY = "src/arl/agent/gateway.py"
 LOCKS = "src/arl/agent/locks.py"
 REDACTION = "src/arl/agent/redaction.py"
+RECORDER = "src/arl/tracing/recorder.py"
+QUERY = "src/arl/tracing/query.py"
+LOGGING = "src/arl/tracing/logging_setup.py"
 
 
 @dataclass(frozen=True)
@@ -71,27 +78,26 @@ MUTANTS = [
     Mutant("runtime: _check_owner no verifica", RUNTIME,
            "if owner is not None and owner != principal_id:", "if False:"),
     Mutant("runtime.resume: no compara action_id/args_hash", RUNTIME,
-           "        if (decision.action_id, decision.args_hash) != (\n"
-           '            request["action_id"],\n            request["args_hash"],\n        ):',
-           "        if False:"),
+           "            if (decision.action_id, decision.args_hash) != (\n"
+           '                request["action_id"],\n                request["args_hash"],\n'
+           "            ):",
+           "            if False:"),
     Mutant("runtime.turn_result: sin chequeo de dueño", RUNTIME,
            "    _check_owner(graph, (await graph.aget_state(thread_config(thread_id))).values)\n",
            ""),
     Mutant("runtime.continue_after_failure: sin chequeo de dueño", RUNTIME,
-           "        _check_owner(graph, snapshot.values)\n        if snapshot.interrupts:\n"
-           "            raise ThreadAwaitingApproval(\n"
-           "                f\"el thread '{thread_id}' espera una decisión",
-           "        if snapshot.interrupts:\n            raise ThreadAwaitingApproval(\n"
-           "                f\"el thread '{thread_id}' espera una decisión"),
+           "            _check_owner(graph, snapshot.values)\n            if snapshot.interrupts:",
+           "            if snapshot.interrupts:"),
     Mutant("graph.check_principal desactivado", GRAPH,
            '        if state.get("principal_id") != gateway.principal_id:\n            raise',
            "        if False:\n            raise"),
     Mutant("await_approval: no verifica el principal del proceso", GRAPH,
-           '        if state.get("principal_id") != gateway.principal_id:\n            return',
-           "        if False:\n            return"),
+           '        if state.get("principal_id") != gateway.principal_id:\n'
+           "            tracing.emit(",
+           "        if False:\n            tracing.emit("),
     Mutant("await_approval: no verifica que la decisión sea de la acción", GRAPH,
-           "        if not decision.matches(pending):\n            return",
-           "        if False:\n            return"),
+           "        if not decision.matches(pending):\n            tracing.emit(",
+           "        if False:\n            tracing.emit("),
     Mutant("await_approval: lanza ante decisión inválida (envenena el thread)", GRAPH,
            'return {"approval": None, "approval_error": "la decisión corresponde a otra acción"}',
            'raise ApprovalMismatch("mutante")'),
@@ -140,8 +146,9 @@ MUTANTS = [
            '                name, "transporte no disponible", error_type=type(exc).__name__\n'
            "            ) from None"),
     Mutant("runtime: run_turn descarta una escritura incierta", RUNTIME,
-           '        if snapshot.next == ("execute_write",):\n            raise ThreadNeedsRecovery',
-           "        if False:\n            raise ThreadNeedsRecovery"),
+           '            if snapshot.next == ("execute_write",):\n'
+           "                raise ThreadNeedsRecovery(",
+           "            if False:\n                raise ThreadNeedsRecovery("),
     Mutant("locks: thread_lock no excluye", LOCKS,
            "        try:\n            _try_lock(handle)", "        try:\n            pass"),
     Mutant("runtime: sin lock_dir sigue sin exclusión (un directorio por llamada)", RUNTIME,
@@ -157,22 +164,58 @@ MUTANTS = [
     Mutant("runtime: los fallos MCP no se convierten en estado", RUNTIME,
            "    except ToolCallFailed as exc:", "    except ZeroDivisionError as exc:"),
     Mutant("continue_after_failure: acepta threads esperando aprobación", RUNTIME,
-           "        if snapshot.interrupts:\n            raise ThreadAwaitingApproval(\n"
-           "                f\"el thread '{thread_id}' espera una decisión, no un reintento\"",
-           "        if False:\n            raise ThreadAwaitingApproval(\n"
-           "                f\"el thread '{thread_id}' espera una decisión, no un reintento\""),
+           "            if snapshot.interrupts:\n                raise ThreadAwaitingApproval(\n"
+           "                    f\"el thread '{thread_id}' espera una decisión, no un reintento\"",
+           "            if False:\n                raise ThreadAwaitingApproval(\n"
+           "                    f\"el thread '{thread_id}' espera una decisión, no un reintento\""),
     # --- Historial, resultado incierto y logs (revisión de etapa 4) ---
     Mutant("run_turn: no cierra las tool calls interrumpidas", RUNTIME,
            'closed = close_unanswered(snapshot.values.get("messages", []))', "closed = []"),
     Mutant("call_model: envía el historial sin verificar el contrato", GRAPH,
            '        check_tool_protocol(state["messages"])\n', ""),
     Mutant("WRITE_UNCERTAIN no expone la clave para reconciliar", RUNTIME,
-           ' | {"idempotency_key": pending.idempotency_key}', ""),
+           '            "idempotency_key": pending.idempotency_key,\n'
+           '            "tool_call_id": pending.tool_call_id,',
+           '            "tool_call_id": pending.tool_call_id,'),
     Mutant("logger del agente sin filtro de secretos", REDACTION,
            "LOGGER.addFilter(RedactingFilter())", "pass"),
     Mutant("runtime: el log de fallos no incluye el tipo de error", RUNTIME,
            "exc.tool, exc.code, exc.error_type, result.status",
            'exc.tool, exc.code, "?", result.status'),
+    # --- Observabilidad (etapa 5) ---
+    Mutant("trazas: emit propaga excepciones (LangGraph reintentaría la escritura)", RECORDER,
+           "        except Exception as exc:  # best-effort: nunca afecta la ejecución",
+           "        except ZeroDivisionError as exc:"),
+    Mutant("trazas: no valida el evento contra el esquema", RECORDER,
+           "model = EVENT_SCHEMAS[event].model_validate(data)",
+           "model = EVENT_SCHEMAS[event].model_construct(**data)"),
+    Mutant("trazas: tool_call_routed registra valores en vez de nombres de campos", GRAPH,
+           '"changed_fields": sorted(args.changes.changes())}',
+           '"changed_fields": sorted(map(str, args.changes.changes().values()))}'),
+    Mutant("trazas: BUSY no deja run_finished", RUNTIME,
+           "        except ThreadBusy:\n"
+           '            finish(TurnStatus.BUSY, refusal="ThreadBusy")\n',
+           "        except ThreadBusy:\n"),
+    Mutant("consulta: escritura incierta informada como fallida", QUERY,
+           'return "uncertain", note, "evidence"', 'return "failed", note, "evidence"'),
+    Mutant("consulta: un reporte importado se cree tal cual", QUERY,
+           "    rebuilt = reconstruct(events, counts[0], unsupported_lines=counts[1])",
+           "    rebuilt = report"),
+    Mutant("consulta: los duplicados cuentan dos veces", QUERY,
+           "        elif unique[key] == e:", "        elif False:"),
+    Mutant("consulta: sin decisión en las trazas, un envío se informa como no preparado", QUERY,
+           'if "approve" in w["decisions"] or w["attempts"] or w["uncertain_runs"]:',
+           'if "approve" in w["decisions"]:'),
+    Mutant("consulta: run_id validado con isalnum()", QUERY,
+           "if RUN_ID.fullmatch(run_id) else []", "if run_id.isalnum() else []"),
+    Mutant("trazas: un evento descartado no deja hueco en seq", RECORDER,
+           "        self.seq += 1\n        try:\n"
+           "            model = EVENT_SCHEMAS[event].model_validate(data)\n",
+           "        try:\n            model = EVENT_SCHEMAS[event].model_validate(data)\n"
+           "            self.seq += 1\n"),
+    Mutant("logging: aiosqlite queda en DEBUG", LOGGING,
+           "logging.NOTSET if allow_unsafe_debug else max(numeric, logging.INFO)",
+           "logging.NOTSET"),
 ]  # fmt: skip
 
 
@@ -249,7 +292,13 @@ def main() -> int:
                 print(f"ABORT: '{mutant.name}': el fragmento aparece {original.count(mutant.old)} "
                       "veces (¿cambió el código?)")  # fmt: skip
                 return 2
-            target.write_text(original.replace(mutant.old, mutant.new), encoding="utf-8")
+            mutated = original.replace(mutant.old, mutant.new)
+            try:  # un mutante que no compila "mataría" la suite por otro motivo
+                compile(mutated, str(target), "exec")
+            except SyntaxError as exc:
+                print(f"ABORT: '{mutant.name}' no es Python válido (línea {exc.lineno})")
+                return 2
+            target.write_text(mutated, encoding="utf-8")
             try:
                 run = run_pytest(copy, TESTS, stop_first=not args.all_failures)
             finally:

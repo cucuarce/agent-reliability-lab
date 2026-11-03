@@ -78,8 +78,14 @@ def lock_dir(checkpoints_path: Path) -> Path:
 
 
 @pytest.fixture
+def trace_dir(checkpoints_path: Path) -> Path:
+    """Trazas JSONL de todas las ejecuciones del test (también las de subprocesos)."""
+    return checkpoints_path.parent / "traces"
+
+
+@pytest.fixture
 def open_agent(
-    db_path: Path, checkpoints_path: Path, lock_dir: Path
+    db_path: Path, checkpoints_path: Path, lock_dir: Path, trace_dir: Path
 ) -> Callable[..., AbstractAsyncContextManager[AgentProcess]]:
     """Un "proceso" del agente: checkpointer SQLite + cliente MCP (en memoria) + grafo.
 
@@ -99,7 +105,10 @@ def open_agent(
         ):
             gateway = McpGateway(client, user_id)
             await gateway.verify_contract()
-            yield build_graph(model, gateway, saver, limits, lock_dir=locks), gateway
+            yield (
+                build_graph(model, gateway, saver, limits, lock_dir=locks, trace_dir=trace_dir),
+                gateway,
+            )
 
     return factory
 
@@ -110,7 +119,7 @@ FAST_RETRY = Limits(retry_initial_interval=0.0, retry_max_interval=0.0, retry_ji
 
 @pytest.fixture
 def open_faulty_agent(
-    db_path: Path, checkpoints_path: Path, lock_dir: Path
+    db_path: Path, checkpoints_path: Path, lock_dir: Path, trace_dir: Path
 ) -> Callable[..., AbstractAsyncContextManager[tuple[CompiledStateGraph, FaultyClient]]]:
     """Como ``open_agent``, pero con un ``FaultyClient`` entre el gateway y el servidor."""
     locks = lock_dir
@@ -129,7 +138,10 @@ def open_faulty_agent(
         ):
             faulty = FaultyClient(client, plan or {})
             gateway = McpGateway(faulty, user_id)  # type: ignore[arg-type]
-            yield build_graph(model, gateway, saver, limits, lock_dir=locks), faulty
+            yield (
+                build_graph(model, gateway, saver, limits, lock_dir=locks, trace_dir=trace_dir),
+                faulty,
+            )
 
     return factory
 
