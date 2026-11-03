@@ -10,9 +10,14 @@ import pytest
 
 from arl.agent.faults import EVERY_CALL, Fault
 from arl.agent.runtime import approve, resume, run_turn
+from arl.agent.scope import RequestScope, allow_update
 from arl.agent.scripted_model import ScriptedChatModel, call, say
 from arl.tracing.__main__ import main
 from arl.tracing.query import REPORT_SCHEMA
+
+# Alcance explícito de cada turno (etapa 6A.1): exactamente lo que el test escribe.
+READ_ONLY = RequestScope.read_only()
+CLOSE_APO3 = RequestScope.writes(allow_update("apo-3", status=["done"]))
 
 pytestmark = pytest.mark.anyio
 
@@ -25,7 +30,7 @@ async def _uncertain_run(open_faulty_agent) -> str:
     )
     plan = {("update_task", EVERY_CALL): Fault.DISCONNECT_AFTER}
     async with open_faulty_agent("alice", model, plan) as (graph, _):
-        paused = await run_turn(graph, thread_id=THREAD, text="cerrá apo-3")
+        paused = await run_turn(graph, thread_id=THREAD, text="cerrá apo-3", scope=CLOSE_APO3)
         result = await resume(graph, thread_id=THREAD, decision=approve(paused.approval_request))
     return result.run_id
 
@@ -86,4 +91,4 @@ def test_missing_traces_and_foreign_files_exit_with_2(tmp_path: Path, capsys) ->
 
 def test_schema_command_prints_the_versioned_json_schema(capsys) -> None:
     assert main(["schema"]) == 0
-    assert json.loads(capsys.readouterr().out)["schema"] == "arl.trace/1"
+    assert json.loads(capsys.readouterr().out)["schema"] == "arl.trace/2"

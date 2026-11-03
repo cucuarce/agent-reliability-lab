@@ -25,6 +25,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out", type=Path, default=Path("evals/reports"))
     parser.add_argument("--only", nargs="+", help="ids de casos a ejecutar")
     parser.add_argument("--no-write", action="store_true", help="no escribe el reporte")
+    parser.add_argument(
+        "--without-scope-enforcement",
+        action="store_true",
+        help="corre los casos v2 con el alcance histórico sin restricciones (medición 'antes')",
+    )
     args = parser.parse_args(argv)
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
@@ -39,7 +44,7 @@ def main(argv: list[str] | None = None) -> int:
             if unknown:
                 raise InvalidCase(f"casos inexistentes: {sorted(unknown)}")
             cases = [c for c in cases if c.case.id in args.only]
-        report = run(cases, Path.cwd())
+        report = run(cases, Path.cwd(), enforce_scope=not args.without_scope_enforcement)
     except (InvalidCase, ConfigError) as exc:
         print(f"arl.evals: {exc}", file=sys.stderr)
         return 2

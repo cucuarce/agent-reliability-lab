@@ -141,3 +141,7 @@ class AgentState(TypedDict, total=False):
     tool_calls_used: int
     model_turns: int
     status: Literal["running", "completed", "tool_limit", "turn_limit"]
+    # Alcance del turno (``arl.agent.scope``): lo fija ``run_turn`` desde la aplicación; ningún
+    # nodo lo modifica. ``scope_ledger`` lo escriben solo nodos determinísticos (por action_id).
+    request_scope: dict[str, Any] | None
+    scope_ledger: dict[str, dict[str, Any]]

@@ -10,7 +10,12 @@ from pathlib import Path
 import pytest
 
 from arl.agent.runtime import TurnStatus, continue_after_failure, run_turn, thread_config
+from arl.agent.scope import RequestScope, allow_update
 from arl.agent.scripted_model import ScriptedChatModel, call, say
+
+# Alcance explícito de cada turno (etapa 6A.1): exactamente lo que el test escribe.
+READ_ONLY = RequestScope.read_only()
+CLOSE_APO3 = RequestScope.writes(allow_update("apo-3", status=["done"]))
 
 pytestmark = pytest.mark.anyio
 
@@ -37,7 +42,7 @@ async def test_process_killed_after_commit_before_checkpoint_resumes_once(
 ) -> None:
     # Proceso 1: deja el thread pausado esperando aprobación.
     async with open_agent("alice", _write_script()) as (graph, _):
-        paused = await run_turn(graph, thread_id=THREAD, text="cerrá apo-3")
+        paused = await run_turn(graph, thread_id=THREAD, text="cerrá apo-3", scope=CLOSE_APO3)
     request_file = tmp_path / "request.json"
     request_file.write_text(json.dumps(paused.approval_request), encoding="utf-8")
 
@@ -63,10 +68,16 @@ async def test_process_killed_after_commit_before_checkpoint_resumes_once(
         snapshot = await graph.aget_state(thread_config(THREAD))
         assert snapshot.next == ("execute_write",)
         assert snapshot.values["pending_write"]["action_id"] == paused.approval_request["action_id"]
+        ledger = snapshot.values["scope_ledger"]  # la reserva sigue tomada tras el crash
+        assert {k: v["state"] for k, v in ledger.items()} == {
+            paused.approval_request["action_id"]: "reserved"
+        }
         done = await continue_after_failure(graph, thread_id=THREAD)
-        messages = (await graph.aget_state(thread_config(THREAD))).values["messages"]
+        final = (await graph.aget_state(thread_config(THREAD))).values
+        messages = final["messages"]
 
     assert (done.status, done.reply) == (TurnStatus.COMPLETED, "Listo.")
+    assert [e["state"] for e in final["scope_ledger"].values()] == ["consumed"]
     assert json.loads(messages[-2].content)["replayed"] is True
     assert _domain(conn) == (("done", 2), 1, 1)  # una sola modificación y una sola auditoría
 
@@ -96,6 +107,11 @@ async def test_prepare_write_lookup_cost(
             return await real_call(name, arguments)
 
         monkeypatch.setattr(gateway, "call", counting_call)
-        await run_turn(graph, thread_id="t-cost", text="cambiá la tarea")
+        await run_turn(
+            graph,
+            thread_id="t-cost",
+            text="cambiá la tarea",
+            scope=RequestScope.writes(allow_update(task_id, status=["done"])),
+        )
 
     assert reads == expected_reads

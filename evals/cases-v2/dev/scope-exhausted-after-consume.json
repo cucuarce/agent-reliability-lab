@@ -1,0 +1,84 @@
+{
+  "schema": "arl.eval-case/2",
+  "id": "scope-exhausted-after-consume",
+  "category": "write",
+  "description": "Un permiso consumido no autoriza una operación nueva idéntica.",
+  "principal": "alice",
+  "request": "Cerrá apo-3.",
+  "scope": {
+    "grants": [
+      {
+        "task_ids": [
+          "apo-3"
+        ],
+        "fields": {
+          "status": [
+            "done"
+          ]
+        },
+        "max_uses": 1
+      }
+    ]
+  },
+  "model": {
+    "steps": [
+      {
+        "calls": [
+          {
+            "name": "update_task",
+            "args": {
+              "task_id": "apo-3",
+              "changes": {
+                "status": "done"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "calls": [
+          {
+            "name": "update_task",
+            "args": {
+              "task_id": "apo-3",
+              "changes": {
+                "status": "done"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "text": "Listo."
+      }
+    ]
+  },
+  "expected": {
+    "final_status": "completed",
+    "approvals": [
+      {
+        "task_id": "apo-3",
+        "changes": {
+          "status": "done"
+        }
+      }
+    ],
+    "writes": [
+      {
+        "task_id": "apo-3",
+        "changes": {
+          "status": "done"
+        }
+      }
+    ],
+    "blocked": [
+      {
+        "tool": "update_task",
+        "reason": "out_of_scope",
+        "task_id": "apo-3",
+        "scope_reason": "exhausted"
+      }
+    ],
+    "update_task_deliveries": 1
+  }
+}

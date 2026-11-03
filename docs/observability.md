@@ -216,6 +216,12 @@ Prueba en vivo de la Skill (`claude -p`, opcional con `ARL_LIVE_SKILL_TEST=1`):
 - La CLI lee cualquier `.jsonl` o `.json` que se le indique. No revela su contenido salvo eventos
   válidos, pero sí confirma si el archivo existe.
 
+## Alcance del turno (`arl.trace/2`, etapa 6A.1)
+
+`run_started.scope`, la decisión `out_of_scope` con `scope_reason` y el evento
+`scope_reservation` (estado de cada permiso). El reporte pasa a `arl.run-report/3`, con la
+sección `scope`. Los lectores siguen aceptando las trazas v1. Detalle en [scope.md](scope.md).
+
 ## Limitaciones y riesgos pendientes
 
 - **Best-effort real:** un disco lleno o un directorio inaccesible deja ejecuciones sin trazas.

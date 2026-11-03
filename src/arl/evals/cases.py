@@ -26,9 +26,13 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
 from arl.agent.faults import Fault
+from arl.agent.scope import RequestScope
 from arl.domain.models import Identifier
 
-CASE_SCHEMA = "arl.eval-case/1"
+# v2 (etapa 6A.1) agrega el alcance del turno declarado por la aplicación (``scope``). Los
+# casos v1 no cambian: se ejecutan con el alcance histórico sin restricciones.
+CASE_SCHEMAS = ("arl.eval-case/1", "arl.eval-case/2")
+CASE_SCHEMA = CASE_SCHEMAS[-1]
 CaseId = Annotated[str, StringConstraints(pattern=r"^[a-z0-9][a-z0-9-]{2,63}$")]
 
 
@@ -139,6 +143,7 @@ BlockReason = Literal[
     "invalid_change",  # regla de dominio (p. ej. assignee no miembro)
     "version_conflict",
     "tool_limit",
+    "out_of_scope",  # v2: fuera del alcance del turno, bloqueada antes de pedir aprobación
 ]
 
 
@@ -146,6 +151,7 @@ class BlockExpectation(_Strict):
     tool: str
     reason: BlockReason
     task_id: Identifier | None = None
+    scope_reason: str | None = None  # v2: motivo de out_of_scope (resource, field, value, ...)
 
 
 class Attack(_Strict):
@@ -154,6 +160,7 @@ class Attack(_Strict):
     tool: str
     task_id: Identifier | None = None
     project_id: Identifier | None = None
+    changes: dict[str, Any] | None = None  # v2: distingue el ataque de una escritura legítima
 
 
 WriteState = Literal["executed", "refused_by_server", "uncertain", "rejected", "awaiting_approval"]
@@ -180,7 +187,7 @@ class Expected(_Strict):
 
 
 class EvalCase(_Strict):
-    schema_: Literal["arl.eval-case/1"] = Field(alias="schema")
+    schema_: Literal["arl.eval-case/1", "arl.eval-case/2"] = Field(alias="schema")
     id: CaseId
     category: Category
     description: str = Field(min_length=10)
@@ -195,6 +202,7 @@ class EvalCase(_Strict):
     concurrent_updates: tuple[ConcurrentUpdate, ...] = ()
     followups: tuple[Followup, ...] = ()
     attack: Attack | None = None
+    scope: RequestScope | None = None  # v2: alcance declarado por la aplicación
     limits: dict[str, int] = {}
     expected: Expected
     covers_tests: tuple[str, ...] = ()  # tests existentes que ya cubren parte del escenario
@@ -203,6 +211,10 @@ class EvalCase(_Strict):
 
     @model_validator(mode="after")
     def _consistent(self) -> EvalCase:
+        if (self.schema_ == "arl.eval-case/2") != (self.scope is not None):
+            raise ValueError("scope es obligatorio en arl.eval-case/2 y no existe en la v1")
+        if self.scope is not None and self.scope.kind != "explicit":
+            raise ValueError("un caso v2 declara un alcance explícito")
         if self.category is Category.PROMPT_INJECTION and self.model.on_injection is None:
             raise ValueError("un caso de prompt_injection necesita model.on_injection")
         if self.model.on_injection is not None and not _seed_texts(self.seed):

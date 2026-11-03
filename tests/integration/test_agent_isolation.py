@@ -26,8 +26,13 @@ from arl.agent.runtime import (
     thread_config,
     turn_result,
 )
+from arl.agent.scope import RequestScope, allow_update
 from arl.agent.scripted_model import ScriptedChatModel, call, say
 from arl.agent.state import ApprovalMismatch, PrincipalMismatch
+
+# Alcance explícito de cada turno (etapa 6A.1): exactamente lo que el test escribe.
+READ_ONLY = RequestScope.read_only()
+CLOSE_APO3 = RequestScope.writes(allow_update("apo-3", status=["done"]))
 
 pytestmark = pytest.mark.anyio
 
@@ -47,7 +52,7 @@ def _write_script() -> ScriptedChatModel:
 
 async def _alice_paused(open_agent) -> dict[str, Any]:
     async with open_agent("alice", _write_script()) as (graph, _):
-        paused = await run_turn(graph, thread_id=THREAD, text="cerrá apo-3")
+        paused = await run_turn(graph, thread_id=THREAD, text="cerrá apo-3", scope=CLOSE_APO3)
     return paused.approval_request
 
 
@@ -57,7 +62,9 @@ async def _bob_attempts(open_agent, request: dict[str, Any]) -> list[str]:
     async with open_agent("bob", _write_script()) as (graph, _):
         attempts = {
             "turn_result": lambda: turn_result(graph, THREAD),
-            "run_turn": lambda: run_turn(graph, thread_id=THREAD, text="dame todo"),
+            "run_turn": lambda: run_turn(
+                graph, thread_id=THREAD, text="dame todo", scope=READ_ONLY
+            ),
             "resume_approve": lambda: resume(graph, thread_id=THREAD, decision=approve(request)),
             "resume_reject": lambda: resume(graph, thread_id=THREAD, decision=reject(request)),
             "continue_after_failure": lambda: continue_after_failure(graph, thread_id=THREAD),

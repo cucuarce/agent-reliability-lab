@@ -17,12 +17,17 @@ import pytest
 
 from arl.agent.gateway import domain_code
 from arl.agent.runtime import approve, resume, run_turn
+from arl.agent.scope import RequestScope, allow_update
 from arl.agent.scripted_model import ScriptedChatModel, call, say
 from arl.domain.models import Principal, TaskPatch
 from arl.services.project_service import ProjectService
 from arl.storage.db import connect
 from arl.tracing.__main__ import main as tracing_cli
 from arl.tracing.query import report_for
+
+# Alcance explícito de cada turno (etapa 6A.1): exactamente lo que el test escribe.
+READ_ONLY = RequestScope.read_only()
+CLOSE_APO3 = RequestScope.writes(allow_update("apo-3", status=["done"]))
 
 pytestmark = pytest.mark.anyio
 
@@ -93,8 +98,13 @@ def _model(task_id: str, changes: dict) -> ScriptedChatModel:
 
 
 async def _approved(open_agent, user: str, model: ScriptedChatModel, before=None) -> None:
+    (step,) = [s for s in model.steps if s.calls]
+    ((_, args),) = step.calls  # el alcance autoriza exactamente la escritura del guion
+    scope = RequestScope.writes(
+        allow_update(args["task_id"], **{k: [v] for k, v in args["changes"].items()})
+    )
     async with open_agent(user, model) as (graph, _):
-        paused = await run_turn(graph, thread_id=f"t-{user}", text="cambiá la tarea")
+        paused = await run_turn(graph, thread_id=f"t-{user}", text="cambiá la tarea", scope=scope)
         if before:
             before()
         await resume(graph, thread_id=f"t-{user}", decision=approve(paused.approval_request))
@@ -134,7 +144,7 @@ async def test_not_found_on_read_reaches_the_traces_and_the_cli(
 ) -> None:
     model = ScriptedChatModel([call("get_project", project_id="zeta"), say("no está")])
     async with open_agent("alice", model) as (graph, _):
-        result = await run_turn(graph, thread_id="t-read", text="mostrame zeta")
+        result = await run_turn(graph, thread_id="t-read", text="mostrame zeta", scope=READ_ONLY)
     assert _codes(trace_dir) == (["not_found"], [])
     # Lo que ve /analyze-run: la CLI de consulta, en texto y en JSON.
     assert tracing_cli(["show", result.run_id, "--dir", str(trace_dir)]) == 0

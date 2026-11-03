@@ -192,7 +192,7 @@ barrera.
 ## Chequeo de mutaciones
 
 ```bash
-uv run python scripts/mutation_check.py            # 55 mutantes (unos 15 minutos)
+uv run python scripts/mutation_check.py            # 65 mutantes (unos 20 minutos)
 uv run python scripts/mutation_check.py --list     # qué regresión reintroduce cada uno
 uv run python scripts/mutation_check.py -k gateway --all-failures
 uv run python scripts/mutation_check.py --baseline-only
@@ -209,7 +209,7 @@ uv run python scripts/mutation_check.py --baseline-only
   script real sobre un repositorio mínimo: una línea base rota da exit 2 sin aplicar mutantes; un
   fragmento desactualizado o un mutante que no compila dan exit 2; un sobreviviente da exit 1; el árbol original queda idéntico
   (hash).
-- Resultado actual: **55/55 detectados** (34 de etapas 3–4, 13 de observabilidad e integridad de trazas, incluido el parser de D1, y 8 del evaluador).
+- Resultado actual: **65/65 detectados** (34 de etapas 3–4, 13 de observabilidad e integridad de trazas, incluido el parser de D1, 9 del evaluador y 9 del alcance del turno).
 
 ## Riesgos pendientes (no cubiertos)
 

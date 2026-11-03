@@ -22,8 +22,13 @@ from arl.agent.runtime import (
     run_turn,
     thread_config,
 )
+from arl.agent.scope import RequestScope, allow_update
 from arl.agent.scripted_model import ScriptedChatModel, Step, call, say
 from arl.agent.state import write_identity
+
+# Alcance explícito de cada turno (etapa 6A.1): exactamente lo que el test escribe.
+READ_ONLY = RequestScope.read_only()
+CLOSE_APO3 = RequestScope.writes(allow_update("apo-3", status=["done"]))
 
 pytestmark = pytest.mark.anyio
 
@@ -65,9 +70,9 @@ async def test_new_turn_after_an_interrupted_read_closes_every_pending_call(
     )
     plan = {("list_projects", EVERY_CALL): Fault.DISCONNECT_BEFORE}
     async with open_faulty_agent("alice", model, plan) as (graph, faulty):
-        first = await run_turn(graph, thread_id=THREAD, text="¿proyectos?")
+        first = await run_turn(graph, thread_id=THREAD, text="¿proyectos?", scope=READ_ONLY)
         assert first.status is TurnStatus.INTERRUPTED
-        done = await run_turn(graph, thread_id=THREAD, text="dejalo, otra cosa")
+        done = await run_turn(graph, thread_id=THREAD, text="dejalo, otra cosa", scope=READ_ONLY)
         messages = await _messages(graph)
 
     assert done.status is TurnStatus.COMPLETED
@@ -90,10 +95,10 @@ async def test_new_turn_after_an_interrupted_write_preparation_closes_it_without
     )
     plan = {("get_project", EVERY_CALL): Fault.TIMEOUT_BEFORE}
     async with open_faulty_agent("alice", model, plan) as (graph, faulty):
-        assert (await run_turn(graph, thread_id=THREAD, text="cerrá apo-3")).status is (
-            TurnStatus.INTERRUPTED
-        )
-        done = await run_turn(graph, thread_id=THREAD, text="mejor no")
+        assert (
+            await run_turn(graph, thread_id=THREAD, text="cerrá apo-3", scope=CLOSE_APO3)
+        ).status is (TurnStatus.INTERRUPTED)
+        done = await run_turn(graph, thread_id=THREAD, text="mejor no", scope=READ_ONLY)
         state = await graph.aget_state(thread_config(THREAD))
 
     assert done.status is TurnStatus.COMPLETED
@@ -118,11 +123,11 @@ async def test_uncertain_write_is_never_closed_and_keeps_action_and_key(
     )
     plan = {("update_task", EVERY_CALL): Fault.DISCONNECT_AFTER}
     async with open_faulty_agent("alice", model, plan) as (graph, faulty):
-        paused = await run_turn(graph, thread_id=THREAD, text="cerrá apo-3")
+        paused = await run_turn(graph, thread_id=THREAD, text="cerrá apo-3", scope=CLOSE_APO3)
         uncertain = await resume(graph, thread_id=THREAD, decision=approve(paused.approval_request))
         before = await _messages(graph)
         with pytest.raises(ThreadNeedsRecovery):
-            await run_turn(graph, thread_id=THREAD, text="olvidalo")
+            await run_turn(graph, thread_id=THREAD, text="olvidalo", scope=READ_ONLY)
         after = await _messages(graph)
         faulty.clear()
         done = await continue_after_failure(graph, thread_id=THREAD)
@@ -145,7 +150,7 @@ async def test_the_model_is_never_called_with_an_unanswered_tool_call(open_fault
     model = ScriptedChatModel([call("list_projects"), say("no debería llegar")])
     plan = {("list_projects", EVERY_CALL): Fault.DISCONNECT_BEFORE}
     async with open_faulty_agent("alice", model, plan) as (graph, _):
-        await run_turn(graph, thread_id=THREAD, text="¿proyectos?")
+        await run_turn(graph, thread_id=THREAD, text="¿proyectos?", scope=READ_ONLY)
         prompts = len(model.prompts)
         with pytest.raises(HistoryInconsistent):
             await graph.ainvoke(

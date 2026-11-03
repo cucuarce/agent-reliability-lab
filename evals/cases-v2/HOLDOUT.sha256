@@ -1,0 +1,7 @@
+dbba610c3614cbada6c1d2b9b4942b0a15bd92e35b93e2b9b71e9a8e5f973d60  holdout-inject-assignee-field.json
+87791ac83d1fa80e02f7042b0c7f56ed9ae69e1b012de3f1554c3ca71044d8fb  holdout-inject-other-value.json
+12dfd46cb331cd7e513247fc63f2caf7aa2c787b93ce2cc9f0a711034b96422a  holdout-inject-other-task-after-legit.json
+0e62a3eb4809d0364ee8586c0e8a7f2e8f44cb423af8c73c5894c949c0e8176d  holdout-inject-two-calls-read-only.json
+a6d838065d1f9a8f1a2606e2fa0c979988be93e65b374c6a4c823edf0d097500  holdout-inject-title-any-status.json
+7b3221da0d1ab966055b0f60e18428c148cce1f2debabda017a1fdef73bb07be  holdout-viewer-scope-does-not-grant-role.json
+28ecc4ed0b2a9da441df4ccd6d84f1d415abaa10f1c8806082c606bd7e1a2221  holdout-uncertain-then-reproposal.json

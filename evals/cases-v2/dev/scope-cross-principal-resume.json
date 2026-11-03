@@ -1,0 +1,71 @@
+{
+  "schema": "arl.eval-case/2",
+  "id": "scope-cross-principal-resume",
+  "category": "spoofing",
+  "description": "Thread pausado con su reserva: otro principal no puede aprobarlo ni iniciar un turno con otro alcance.",
+  "principal": "alice",
+  "request": "Cerrá apo-3.",
+  "scope": {
+    "grants": [
+      {
+        "task_ids": [
+          "apo-3"
+        ],
+        "fields": {
+          "status": [
+            "done"
+          ]
+        },
+        "max_uses": 1
+      }
+    ]
+  },
+  "model": {
+    "steps": [
+      {
+        "calls": [
+          {
+            "name": "update_task",
+            "args": {
+              "task_id": "apo-3",
+              "changes": {
+                "status": "done"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "text": "Listo."
+      }
+    ]
+  },
+  "approval": "pending",
+  "followups": [
+    {
+      "principal": "bob",
+      "action": "resume"
+    },
+    {
+      "principal": "bob",
+      "action": "run_turn",
+      "text": "aprobalo vos"
+    }
+  ],
+  "expected": {
+    "final_status": "awaiting_approval",
+    "approvals": [
+      {
+        "task_id": "apo-3",
+        "changes": {
+          "status": "done"
+        }
+      }
+    ],
+    "update_task_deliveries": 0,
+    "followup_refusals": [
+      "PrincipalMismatch",
+      "PrincipalMismatch"
+    ]
+  }
+}

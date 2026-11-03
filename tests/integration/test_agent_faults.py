@@ -29,10 +29,15 @@ from arl.agent.runtime import (
     thread_config,
     turn_result,
 )
+from arl.agent.scope import RequestScope, allow_update
 from arl.agent.scripted_model import ScriptedChatModel, call, say
 from arl.agent.state import Limits, write_identity
 from arl.domain.models import Principal, TaskPatch
 from arl.services.project_service import ProjectService
+
+# Alcance explícito de cada turno (etapa 6A.1): exactamente lo que el test escribe.
+READ_ONLY = RequestScope.read_only()
+CLOSE_APO3 = RequestScope.writes(allow_update("apo-3", status=["done"]))
 
 pytestmark = pytest.mark.anyio
 
@@ -63,7 +68,7 @@ def _task(conn, task_id: str = "apo-3") -> tuple:
 
 async def _paused(open_faulty_agent, user: str = "alice") -> dict:
     async with open_faulty_agent(user, _write_model()) as (graph, _):
-        paused = await run_turn(graph, thread_id=THREAD, text="cerrá apo-3")
+        paused = await run_turn(graph, thread_id=THREAD, text="cerrá apo-3", scope=CLOSE_APO3)
     assert paused.status is TurnStatus.AWAITING_APPROVAL
     return paused.approval_request
 
@@ -86,7 +91,7 @@ async def test_transient_read_failure_is_retried(
         graph,
         faulty,
     ):
-        result = await run_turn(graph, thread_id=THREAD, text="¿proyectos?")
+        result = await run_turn(graph, thread_id=THREAD, text="¿proyectos?", scope=READ_ONLY)
     assert (result.status, result.reply) == (TurnStatus.COMPLETED, "Hay proyectos.")
     assert len(_calls(faulty, "list_projects")) == 2
     invariants(conn, NO_KEYS)
@@ -97,7 +102,7 @@ async def test_persistent_read_failure_stops_cleanly_and_can_continue(
 ) -> None:
     plan = {("list_projects", EVERY_CALL): Fault.TIMEOUT_BEFORE}
     async with open_faulty_agent("alice", _read_model(), plan) as (graph, faulty):
-        result = await run_turn(graph, thread_id=THREAD, text="¿proyectos?")
+        result = await run_turn(graph, thread_id=THREAD, text="¿proyectos?", scope=READ_ONLY)
         attempts = len(_calls(faulty, "list_projects"))
     assert result.status is TurnStatus.INTERRUPTED
     assert result.error == "[unavailable] list_projects"
@@ -115,7 +120,7 @@ async def test_failure_while_preparing_a_write_never_skips_approval(
 ) -> None:
     plan = {("get_project", EVERY_CALL): Fault.DISCONNECT_BEFORE}
     async with open_faulty_agent("alice", _write_model(), plan) as (graph, faulty):
-        result = await run_turn(graph, thread_id=THREAD, text="cerrá apo-3")
+        result = await run_turn(graph, thread_id=THREAD, text="cerrá apo-3", scope=CLOSE_APO3)
     assert result.status is TurnStatus.INTERRUPTED
     assert _calls(faulty, "update_task") == []
 
@@ -173,7 +178,7 @@ async def test_unconfirmed_write_is_reported_as_uncertain_and_recovered_once(
     async with open_faulty_agent("alice", _write_model(), plan) as (graph, faulty):
         result = await resume(graph, thread_id=THREAD, decision=approve(request))
         with pytest.raises(ThreadNeedsRecovery):  # no se puede descartar con un turno nuevo
-            await run_turn(graph, thread_id=THREAD, text="olvidalo")
+            await run_turn(graph, thread_id=THREAD, text="olvidalo", scope=READ_ONLY)
     assert result.status is TurnStatus.WRITE_UNCERTAIN
     assert result.error == "[unavailable] update_task"
     assert result.pending_action["action_id"] == request["action_id"]
@@ -243,7 +248,7 @@ async def test_invalid_read_responses_stop_without_retry(
     if tool == "list_projects":
         model = _read_model()
     async with open_faulty_agent("alice", model, {(tool, EVERY_CALL): fault}) as (graph, faulty):
-        result = await run_turn(graph, thread_id=THREAD, text="leé")
+        result = await run_turn(graph, thread_id=THREAD, text="leé", scope=READ_ONLY)
     assert result.status is TurnStatus.INTERRUPTED
     assert result.error == f"[invalid_response] {tool}"
     assert len(_calls(faulty, tool)) == 1
@@ -285,7 +290,7 @@ async def test_transport_errors_do_not_leak_sensitive_text(
     caplog.set_level(logging.DEBUG)
     async with open_faulty_agent("alice", _read_model()) as (graph, faulty):
         monkeypatch.setattr(faulty, "call_tool", leaky_transport)
-        result = await run_turn(graph, thread_id=THREAD, text="¿proyectos?")
+        result = await run_turn(graph, thread_id=THREAD, text="¿proyectos?", scope=READ_ONLY)
         state = await graph.aget_state(thread_config(THREAD))
     assert result.status is TurnStatus.INTERRUPTED
     for text in (caplog.text, str(result), str(state.values)):
@@ -300,7 +305,7 @@ async def test_failure_in_one_thread_does_not_affect_another(open_faulty_agent, 
     async with open_faulty_agent("alice", _write_model(), plan) as (graph, _):
         uncertain = await resume(graph, thread_id=THREAD, decision=approve(request))
     async with open_faulty_agent("alice", _read_model(), plan) as (graph, _):
-        other = await run_turn(graph, thread_id="t-otro", text="¿proyectos?")
+        other = await run_turn(graph, thread_id="t-otro", text="¿proyectos?", scope=READ_ONLY)
         still = await turn_result(graph, THREAD)
     assert uncertain.status is TurnStatus.WRITE_UNCERTAIN
     assert other.status is TurnStatus.COMPLETED
@@ -315,7 +320,7 @@ async def test_retries_are_bounded_with_capped_backoff(open_faulty_agent, conn) 
     plan = {("list_projects", EVERY_CALL): Fault.DISCONNECT_BEFORE}
     async with open_faulty_agent("alice", _read_model(), plan, limits) as (graph, faulty):
         start = time.perf_counter()
-        result = await run_turn(graph, thread_id=THREAD, text="¿proyectos?")
+        result = await run_turn(graph, thread_id=THREAD, text="¿proyectos?", scope=READ_ONLY)
         elapsed = time.perf_counter() - start
     assert result.status is TurnStatus.INTERRUPTED
     assert len(_calls(faulty, "list_projects")) == 4
@@ -324,11 +329,11 @@ async def test_retries_are_bounded_with_capped_backoff(open_faulty_agent, conn) 
 
 async def test_continue_requires_an_interrupted_run(open_faulty_agent) -> None:
     async with open_faulty_agent("alice", _write_model()) as (graph, _):
-        await run_turn(graph, thread_id=THREAD, text="cerrá apo-3")
+        await run_turn(graph, thread_id=THREAD, text="cerrá apo-3", scope=CLOSE_APO3)
         with pytest.raises(ThreadAwaitingApproval):
             await continue_after_failure(graph, thread_id=THREAD)
     async with open_faulty_agent("alice", _read_model()) as (graph, _):
-        await run_turn(graph, thread_id="t-ok", text="hola")
+        await run_turn(graph, thread_id="t-ok", text="hola", scope=READ_ONLY)
         with pytest.raises(NothingToContinue):
             await continue_after_failure(graph, thread_id="t-ok")
 

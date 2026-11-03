@@ -23,8 +23,13 @@ from arl.agent.runtime import (
     run_turn,
     thread_config,
 )
+from arl.agent.scope import RequestScope, allow_update
 from arl.agent.scripted_model import ScriptedChatModel, call, say
 from arl.agent.state import Limits, write_identity
+
+# Alcance explícito de cada turno (etapa 6A.1): exactamente lo que el test escribe.
+READ_ONLY = RequestScope.read_only()
+CLOSE_APO3 = RequestScope.writes(allow_update("apo-3", status=["done"]))
 
 pytestmark = pytest.mark.anyio
 
@@ -56,7 +61,14 @@ def _faulty_server(db_path: Path, fault: str, delay_s: float = 2.0) -> StdioServ
 
 async def _pause(open_agent, user: str = "alice", status: str = "done", thread: str = THREAD):
     async with open_agent(user, _model(status)) as (graph, _):
-        return (await run_turn(graph, thread_id=thread, text="cambiá apo-3")).approval_request
+        return (
+            await run_turn(
+                graph,
+                thread_id=thread,
+                text="cambiá apo-3",
+                scope=RequestScope.writes(allow_update("apo-3", status=[status])),
+            )
+        ).approval_request
 
 
 async def _resume_against(params, checkpoints: Path, request: dict, timeout_s: float):

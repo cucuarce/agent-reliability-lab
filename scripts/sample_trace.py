@@ -29,6 +29,7 @@ from arl.agent.faults import EVERY_CALL, Fault, FaultPlan, FaultyClient
 from arl.agent.gateway import McpGateway
 from arl.agent.graph import build_graph
 from arl.agent.runtime import approve, resume, run_turn
+from arl.agent.scope import RequestScope, allow_update
 from arl.agent.scripted_model import ScriptedChatModel, call, say
 from arl.agent.state import Limits
 from arl.config import resolve_data_dir
@@ -37,6 +38,10 @@ from arl.mcp_server.server import create_server
 from arl.storage.seed import create_database
 from arl.tracing.logging_setup import configure_logging
 from arl.tracing.recorder import run_file
+
+# Alcance explícito de cada turno (etapa 6A.1): exactamente lo que el test escribe.
+READ_ONLY = RequestScope.read_only()
+CLOSE_APO3 = RequestScope.writes(allow_update("apo-3", status=["done"]))
 
 FAST = Limits(retry_initial_interval=0.0, retry_max_interval=0.0, retry_jitter=False)
 
@@ -57,7 +62,9 @@ async def _scenario(data: Path, db: Path, thread: str, plan: FaultPlan) -> dict[
         graph = build_graph(
             model, gateway, saver, FAST, lock_dir=data / "locks", trace_dir=data / "traces"
         )
-        paused = await run_turn(graph, thread_id=thread, text="Revisá apollo y cerrá apo-3")
+        paused = await run_turn(
+            graph, thread_id=thread, text="Revisá apollo y cerrá apo-3", scope=CLOSE_APO3
+        )
         done = await resume(graph, thread_id=thread, decision=approve(paused.approval_request))
     return {
         "thread_id": thread,

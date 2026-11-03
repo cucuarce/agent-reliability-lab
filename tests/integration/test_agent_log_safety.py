@@ -20,7 +20,12 @@ from mcp_types import CONNECTION_CLOSED, INTERNAL_ERROR, REQUEST_TIMEOUT
 from arl.agent.gateway import McpGateway, ToolCallFailed
 from arl.agent.redaction import LOGGER, redact
 from arl.agent.runtime import TurnStatus, run_turn, thread_config
+from arl.agent.scope import RequestScope, allow_update
 from arl.agent.scripted_model import ScriptedChatModel, call, say
+
+# Alcance explícito de cada turno (etapa 6A.1): exactamente lo que el test escribe.
+READ_ONLY = RequestScope.read_only()
+CLOSE_APO3 = RequestScope.writes(allow_update("apo-3", status=["done"]))
 
 pytestmark = pytest.mark.anyio
 
@@ -95,7 +100,7 @@ async def test_failed_turn_logs_trace_operation_and_type_without_secrets(
     caplog.set_level(logging.DEBUG)  # todo: LangGraph (reintentos con traceback), SDK, arl
     async with open_faulty_agent("alice", model) as (graph, faulty):
         monkeypatch.setattr(faulty, "call_tool", _raising(OSError(LEAKY)))
-        result = await run_turn(graph, thread_id="t-log", text="¿proyectos?")
+        result = await run_turn(graph, thread_id="t-log", text="¿proyectos?", scope=READ_ONLY)
         state = await graph.aget_state(thread_config("t-log"))
 
     assert result.status is TurnStatus.INTERRUPTED

@@ -27,10 +27,10 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from arl.tracing.events import SCHEMA_VERSION, validate_event
+from arl.tracing.events import SUPPORTED_VERSIONS, validate_event
 from arl.tracing.recorder import run_file
 
-REPORT_SCHEMA = "arl.run-report/2"
+REPORT_SCHEMA = "arl.run-report/3"
 RUN_ID = re.compile(r"^[0-9a-f]{16}$")
 MAX_FILE_BYTES = 64 * 1024 * 1024  # una ejecución ocupa KB: más es un archivo ajeno
 
@@ -74,7 +74,7 @@ def _scan_line(line: bytes, scan: Scan) -> None:
         scan.invalid += 1
         return
     version = raw.get("v") if isinstance(raw, dict) else None
-    if isinstance(version, int) and version != SCHEMA_VERSION:
+    if isinstance(version, int) and version not in SUPPORTED_VERSIONS:
         scan.unsupported += 1
         return
     try:
@@ -198,7 +198,10 @@ def _summary_line(event: dict[str, Any]) -> str:
         return f"turn={d['model_turn']} {d['outcome']} {d['duration_ms']}ms {calls}".rstrip()
     if kind == "tool_call_routed":
         target = d.get("task_id") or d.get("project_id") or ""
-        return f"{d['tool']}({d['tool_call_id']}) -> {d['decision']} {target}".rstrip()
+        why = f" ({d['scope_reason']})" if d.get("scope_reason") else ""
+        return f"{d['tool']}({d['tool_call_id']}) -> {d['decision']}{why} {target}".rstrip()
+    if kind == "scope_reservation":
+        return f"action={d['action_id']} {d['task_id']} grant={d['grant_id']} {d['state']}"
     if kind == "approval_requested":
         return (
             f"action={d['action_id']} {d['task_id']} fields={','.join(d['changed_fields'])} "
@@ -349,6 +352,25 @@ ABSENCE = (
 )
 
 
+def _scope(events: list[dict[str, Any]]) -> dict[str, Any]:
+    """Alcance del turno: escrituras bloqueadas antes de pedir aprobación y estado final de cada
+    reserva (la evidencia de lo escrito sigue siendo el audit_log)."""
+    blocked = [
+        {"run_id": e["run_id"], "seq": e["seq"], "tool_call_id": e["data"]["tool_call_id"],
+         "task_id": e["data"].get("task_id"), "reason": e["data"].get("scope_reason")}
+        for e in events
+        if e["event"] == "tool_call_routed" and e["data"]["decision"] == "out_of_scope"
+    ]  # fmt: skip
+    reservations: dict[str, dict[str, Any]] = {}
+    for e in events:
+        if e["event"] == "scope_reservation":
+            d = e["data"]
+            reservations[d["action_id"]] = {k: d[k] for k in ("grant_id", "task_id", "state")}
+    kinds = sorted({e["data"]["scope"] for e in events
+                    if e["event"] == "run_started" and e["data"].get("scope")})  # fmt: skip
+    return {"kinds": kinds, "blocked": blocked, "reservations": reservations}
+
+
 def _write_state(w: dict[str, Any], last_run_complete: bool) -> tuple[str, str, str]:
     """(estado, nota, basis): ``evidence`` si un evento lo prueba, ``absence`` si solo se deduce
     de eventos que faltan."""
@@ -464,6 +486,7 @@ def reconstruct(
         "writes": _writes(ordered, last["complete"]),
         "invalid_lines": invalid_lines,
         "integrity": integrity,
+        "scope": _scope(ordered),
         "timeline": [
             {
                 "t_ms": round((_ts(e) - origin).total_seconds() * 1000, 3),
@@ -518,6 +541,14 @@ def render(report: dict[str, Any]) -> str:
                 f"  intentos={len(w['attempts'])}  claves={keys}"
             )
             lines.append(f"      {w['note']}")
+    scope = report.get("scope") or {}
+    if scope.get("blocked") or scope.get("reservations"):
+        lines += ["", f"alcance del turno ({', '.join(scope['kinds']) or 'sin declarar'}):"]
+        for b in scope["blocked"]:
+            lines.append(f"  bloqueada antes de aprobar: {b['tool_call_id']} {b['task_id']} "
+                         f"({b['reason']})")  # fmt: skip
+        for action_id, r in scope["reservations"].items():
+            lines.append(f"  reserva action={action_id} {r['task_id']} {r['state']}")
     problems = _integrity_problems(report["integrity"])
     if problems:
         lines += ["", "integridad de las trazas:"] + [f"  {text}" for _, text in problems]

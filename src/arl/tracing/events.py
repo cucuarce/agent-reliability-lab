@@ -19,7 +19,10 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+# v2 (etapa 6A.1) es un superconjunto de v1: agrega el alcance del turno (``run_started.scope``,
+# la decisión ``out_of_scope`` y el evento ``scope_reservation``). Los lectores aceptan ambas.
+SUPPORTED_VERSIONS = (1, 2)
 
 _SAFE_ID = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
 SafeId = Annotated[str, StringConstraints(pattern=_SAFE_ID.pattern)]
@@ -39,6 +42,9 @@ class _Data(BaseModel):
 
 
 Operation = Literal["run_turn", "resume", "continue_after_failure"]
+ScopeReason = Literal[
+    "read_only", "resource", "field", "value", "exhausted", "max_writes", "no_scope"
+]
 RunStatus = Literal[
     "completed",
     "awaiting_approval",
@@ -65,6 +71,7 @@ class Failure(_Data):
 
 class RunStarted(_Data):
     operation: Operation
+    scope: Literal["explicit", "read_only", "unrestricted_legacy_v1"] | None = None
 
 
 class RecoveryStarted(_Data):
@@ -93,7 +100,10 @@ class ToolCallRouted(_Data):
 
     tool_call_id: SafeId
     tool: SafeId
-    decision: Literal["execute", "requires_approval", "invalid_tool_call", "tool_limit"]
+    decision: Literal[
+        "execute", "requires_approval", "invalid_tool_call", "tool_limit", "out_of_scope"
+    ]
+    scope_reason: ScopeReason | None = None  # solo para out_of_scope: código fijo, sin valores
     project_id: SafeId | None = None
     task_id: SafeId | None = None
     changed_fields: list[SafeId] | None = None  # solo nombres, nunca valores
@@ -149,6 +159,15 @@ class WriteResult(_Data):
     audit_id: int | None = None
 
 
+class ScopeReservation(_Data):
+    """Estado de la reserva de un permiso del alcance para una acción (ver ``arl.agent.scope``)."""
+
+    action_id: SafeId
+    grant_id: SafeId
+    task_id: SafeId
+    state: Literal["reserved", "consumed", "released", "refused", "invalidated"]
+
+
 class WriteUncertain(_Data):
     """La escritura aprobada no pudo confirmarse: pudo ocurrir o no. No es un fallo."""
 
@@ -185,6 +204,7 @@ EVENT_SCHEMAS: dict[str, type[_Data]] = {
     "mcp_call": McpCall,
     "write_result": WriteResult,
     "write_uncertain": WriteUncertain,
+    "scope_reservation": ScopeReservation,
     "run_finished": RunFinished,
 }
 
@@ -192,7 +212,7 @@ EVENT_SCHEMAS: dict[str, type[_Data]] = {
 class Envelope(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    v: Literal[1] = SCHEMA_VERSION
+    v: Literal[1, 2] = SCHEMA_VERSION
     ts: str  # ISO 8601 con zona horaria
     seq: int = Field(ge=1)  # orden dentro de la ejecución: 1, 2, 3...
     event: Literal[tuple(EVENT_SCHEMAS)]  # type: ignore[valid-type]

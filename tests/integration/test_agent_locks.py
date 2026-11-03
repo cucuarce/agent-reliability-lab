@@ -8,7 +8,12 @@ import pytest
 
 from arl.agent.locks import ThreadBusy, lock_path, thread_lock
 from arl.agent.runtime import TurnStatus, approve, resume, run_turn, turn_result
+from arl.agent.scope import RequestScope, allow_update
 from arl.agent.scripted_model import ScriptedChatModel, call, say
+
+# Alcance explícito de cada turno (etapa 6A.1): exactamente lo que el test escribe.
+READ_ONLY = RequestScope.read_only()
+CLOSE_APO3 = RequestScope.writes(allow_update("apo-3", status=["done"]))
 
 pytestmark = pytest.mark.anyio
 
@@ -42,12 +47,12 @@ async def test_runtime_refuses_to_run_a_thread_that_is_already_running(
     open_agent, lock_dir: Path, conn
 ) -> None:
     async with open_agent("alice", _write_model()) as (graph, _):
-        paused = await run_turn(graph, thread_id=THREAD, text="cerrá apo-3")
+        paused = await run_turn(graph, thread_id=THREAD, text="cerrá apo-3", scope=CLOSE_APO3)
         with thread_lock(lock_dir, THREAD):  # otro proceso lo está ejecutando
             with pytest.raises(ThreadBusy):
                 await resume(graph, thread_id=THREAD, decision=approve(paused.approval_request))
             with pytest.raises(ThreadBusy):
-                await run_turn(graph, thread_id=THREAD, text="otra cosa")
+                await run_turn(graph, thread_id=THREAD, text="otra cosa", scope=READ_ONLY)
             assert (await turn_result(graph, THREAD)).status is TurnStatus.BUSY
         done = await resume(graph, thread_id=THREAD, decision=approve(paused.approval_request))
     assert done.status is TurnStatus.COMPLETED
@@ -61,7 +66,7 @@ async def test_busy_status_does_not_reveal_threads_of_other_principals(
     from arl.agent.state import PrincipalMismatch
 
     async with open_agent("alice", _write_model()) as (graph, _):
-        await run_turn(graph, thread_id=THREAD, text="cerrá apo-3")
+        await run_turn(graph, thread_id=THREAD, text="cerrá apo-3", scope=CLOSE_APO3)
     async with open_agent("bob", _write_model()) as (graph, _):
         with thread_lock(lock_dir, THREAD), pytest.raises(PrincipalMismatch):
             await turn_result(graph, THREAD)  # primero el dueño, después el lock
@@ -100,11 +105,11 @@ async def test_every_runtime_entry_point_refuses_to_run_without_a_lock(
     from arl.agent.runtime import continue_after_failure
 
     async with open_agent("alice", _write_model()) as (graph, _):
-        paused = await run_turn(graph, thread_id=THREAD, text="cerrá apo-3")
+        paused = await run_turn(graph, thread_id=THREAD, text="cerrá apo-3", scope=CLOSE_APO3)
         unlocked = graph.with_config({"configurable": {"lock_dir": None}})
         before = _files(checkpoints_path)
         calls = {
-            "run_turn": lambda: run_turn(unlocked, thread_id=THREAD, text="otra"),
+            "run_turn": lambda: run_turn(unlocked, thread_id=THREAD, text="otra", scope=READ_ONLY),
             "resume": lambda: resume(
                 unlocked, thread_id=THREAD, decision=approve(paused.approval_request)
             ),

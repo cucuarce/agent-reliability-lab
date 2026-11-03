@@ -26,10 +26,11 @@ import anyio
 from arl import __version__
 from arl.config import ConfigError, _is_synced_folder
 from arl.evals import graders, metrics
-from arl.evals.cases import CASE_SCHEMA, CaseFile, suite_fingerprint
-from arl.evals.runner import EVAL_LIMITS, MODEL_KIND, InfraError, run_case
+from arl.evals.cases import CaseFile, suite_fingerprint
+from arl.evals.runner import EVAL_LIMITS, MODEL_KIND, InfraError, run_case, scope_for
 
-SUITE_VERSION = "6a.1"
+# Versión de la suite según el esquema de sus casos: v1 (6A, sin alcance) y v2 (6A.1).
+SUITE_VERSIONS = {"arl.eval-case/1": "6a.1", "arl.eval-case/2": "6a1.1"}
 REPORT_SCHEMA = "arl.eval-report/1"
 SAFETY_CAVEAT = (
     "> 0 violaciones de garantías implementadas **no** significa ausencia de riesgo: solo cubre "
@@ -60,7 +61,7 @@ def _scratch_root() -> Path:
     return root
 
 
-async def _evaluate(case_file: CaseFile, workdir: Path) -> dict[str, Any]:
+async def _evaluate(case_file: CaseFile, workdir: Path, enforce_scope: bool) -> dict[str, Any]:
     case = case_file.case
     base = {
         "case_id": case.id,
@@ -68,10 +69,11 @@ async def _evaluate(case_file: CaseFile, workdir: Path) -> dict[str, Any]:
         "path": case_file.path,
         "case_sha256": case_file.sha256,
         "covers_tests": list(case.covers_tests),
+        "scope_mode": scope_for(case, enforce=enforce_scope).kind,  # el mismo que usa run_case
     }
     start = time.perf_counter()
     try:
-        obs = await run_case(case, workdir)
+        obs = await run_case(case, workdir, enforce_scope=enforce_scope)
     except InfraError as exc:
         return base | {
             "verdict": "error",
@@ -88,6 +90,7 @@ async def _evaluate(case_file: CaseFile, workdir: Path) -> dict[str, Any]:
         "graders": [g.to_dict() for g in results],
         "attack": attack,
         "findings": findings,
+        "scope_stats": graders.scope_stats(case, obs),
         "observation": _summary(obs),
         "duration_ms": _ms(start),
     }
@@ -129,19 +132,26 @@ def _summary(obs) -> dict[str, Any]:
     }
 
 
-async def run_suite(cases: list[CaseFile], root: Path) -> dict[str, Any]:
+async def run_suite(
+    cases: list[CaseFile], root: Path, *, enforce_scope: bool = True
+) -> dict[str, Any]:
     started = datetime.now(UTC)
     results = []
     with tempfile.TemporaryDirectory(prefix="arl-evals-", dir=_scratch_root()) as scratch:
         for case_file in cases:
             workdir = Path(scratch) / case_file.case.id
             workdir.mkdir()
-            results.append(await _evaluate(case_file, workdir))
+            results.append(await _evaluate(case_file, workdir, enforce_scope))
+    modes = sorted({r["scope_mode"] for r in results})
     return {
         "schema": REPORT_SCHEMA,
         "metadata": {
-            "suite_version": SUITE_VERSION,
-            "case_schema": CASE_SCHEMA,
+            "suite_version": ", ".join(sorted({SUITE_VERSIONS[c.case.schema_] for c in cases})),
+            # True solo si todos los casos corrieron con un alcance explícito. Los casos v1 corren
+            # siempre con el histórico, y --without-scope-enforcement aplica el histórico a los v2.
+            "scope_enforcement": modes == ["explicit"],
+            "scope_modes": modes,
+            "case_schema": ", ".join(sorted({c.case.schema_ for c in cases})),
             "suite_fingerprint": suite_fingerprint(cases),
             **git_state(root),
             "arl_version": __version__,
@@ -165,8 +175,11 @@ async def run_suite(cases: list[CaseFile], root: Path) -> dict[str, Any]:
     }
 
 
-def run(cases: list[CaseFile], root: Path) -> dict[str, Any]:
-    return anyio.run(run_suite, cases, root)
+def run(cases: list[CaseFile], root: Path, *, enforce_scope: bool = True) -> dict[str, Any]:
+    async def main() -> dict[str, Any]:
+        return await run_suite(cases, root, enforce_scope=enforce_scope)
+
+    return anyio.run(main)
 
 
 def write_report(report: dict[str, Any], out_dir: Path) -> Path:
@@ -219,6 +232,7 @@ def render(report: dict[str, Any]) -> str:
     for title, group in (
         ("Métricas funcionales", "functional"),
         ("Métricas de seguridad", "safety"),
+        ("Alcance del turno (casos v2)", "scope"),
         ("Garantías propuestas (no implementadas)", "proposed"),
     ):
         lines += ["", f"## {title}", "", "| Métrica | Valor | Definición |", "|---|---|---|"]

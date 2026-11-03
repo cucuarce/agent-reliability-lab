@@ -18,8 +18,13 @@ from arl.agent.runtime import (
     thread_config,
     turn_result,
 )
+from arl.agent.scope import RequestScope, allow_update
 from arl.agent.scripted_model import ScriptedChatModel, call, say
 from arl.agent.state import write_identity
+
+# Alcance explícito de cada turno (etapa 6A.1): exactamente lo que el test escribe.
+READ_ONLY = RequestScope.read_only()
+CLOSE_APO3 = RequestScope.writes(allow_update("apo-3", status=["done"]))
 
 pytestmark = pytest.mark.anyio
 
@@ -62,14 +67,14 @@ async def test_committed_write_with_bad_or_lost_response_is_reconciled_by_replay
         graph,
         faulty,
     ):
-        paused = await run_turn(graph, thread_id=THREAD, text="cerrá apo-3")
+        paused = await run_turn(graph, thread_id=THREAD, text="cerrá apo-3", scope=CLOSE_APO3)
         uncertain = await resume(graph, thread_id=THREAD, decision=approve(paused.approval_request))
         # El servidor confirmó, pero el agente no tiene evidencia: no declara éxito.
         assert uncertain.status is TurnStatus.WRITE_UNCERTAIN
         assert await _write_messages(graph) == []
         assert _audits(conn) == [(KEY, "apo-3")]
         with pytest.raises(ThreadNeedsRecovery):
-            await run_turn(graph, thread_id=THREAD, text="intentalo de nuevo")
+            await run_turn(graph, thread_id=THREAD, text="intentalo de nuevo", scope=READ_ONLY)
         faulty.clear()  # el servicio vuelve a responder bien
         done = await continue_after_failure(graph, thread_id=THREAD)
         (evidence,) = await _write_messages(graph)
@@ -87,7 +92,7 @@ async def test_persistently_bad_response_stays_uncertain_without_new_operations(
 ) -> None:
     plan = {("update_task", EVERY_CALL): Fault.MALFORMED}
     async with open_faulty_agent("alice", _model(), plan) as (graph, faulty):
-        paused = await run_turn(graph, thread_id=THREAD, text="cerrá apo-3")
+        paused = await run_turn(graph, thread_id=THREAD, text="cerrá apo-3", scope=CLOSE_APO3)
         await resume(graph, thread_id=THREAD, decision=approve(paused.approval_request))
         results = [await continue_after_failure(graph, thread_id=THREAD) for _ in range(3)]
         state = await turn_result(graph, THREAD)

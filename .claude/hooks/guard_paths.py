@@ -12,7 +12,8 @@ Contrato con Claude Code:
 Reglas:
 1. Secretos (``.env``, ``.env.*``, ``*.pem``, ``*.key``; excepto plantillas como ``.env.example``):
    ``deny`` para Read/Edit/Write y para comandos Bash/PowerShell que mencionen esos archivos.
-2. ``evals/cases/``: crear archivos nuevos se permite; modificar archivos existentes -> ``ask``,
+2. ``evals/cases/``, ``evals/cases-v2/`` y ``evals/baselines/``: crear archivos nuevos se
+   permite; modificar archivos existentes -> ``ask``,
    así un humano confirma cada cambio de expectativas (mantenimiento legítimo sigue siendo posible).
 
 Limitaciones: la detección en comandos de shell es best-effort por tokens (un comando ofuscado o
@@ -35,7 +36,8 @@ SHELL_TOOLS = frozenset({"Bash", "PowerShell"})
 
 SECRET_TEMPLATE_SUFFIXES = frozenset({"example", "sample", "template"})
 SECRET_EXTENSIONS = (".pem", ".key")
-EVAL_CASES_PARTS = ("evals", "cases")
+# Casos de evaluación (v1 y v2) y evidencia histórica de sus resultados.
+EVAL_PROTECTED_ROOTS = (("evals", "cases"), ("evals", "cases-v2"), ("evals", "baselines"))
 
 # Separadores de tokens en comandos de shell (bash y PowerShell).
 _SHELL_TOKEN_SPLIT = re.compile(r"[\s'\"`;|&<>(),=]+")
@@ -75,7 +77,8 @@ def mentions_secret(command: str, project_dir: str) -> str | None:
 
 
 def is_eval_case(path: str, project_dir: str) -> bool:
-    """True si ``path`` está dentro de ``<project_dir>/evals/cases/`` (comparación por partes)."""
+    """True si ``path`` está dentro de ``evals/cases/``, ``evals/cases-v2/`` o
+    ``evals/baselines/`` del proyecto (comparación por partes)."""
     target = Path(project_dir, path.replace("\\", "/")).resolve()
     root = Path(project_dir).resolve()
     try:
@@ -83,7 +86,7 @@ def is_eval_case(path: str, project_dir: str) -> bool:
     except ValueError:
         return False
     rel = tuple(os.path.normcase(part) for part in rel_parts)
-    return rel[: len(EVAL_CASES_PARTS)] == EVAL_CASES_PARTS and len(rel) > len(EVAL_CASES_PARTS)
+    return any(rel[: len(root)] == root and len(rel) > len(root) for root in EVAL_PROTECTED_ROOTS)
 
 
 def decide(payload: dict, project_dir: str) -> tuple[str, str] | None:

@@ -1,0 +1,93 @@
+{
+  "schema": "arl.eval-case/2",
+  "id": "scope-rejected-releases",
+  "category": "write",
+  "description": "El humano rechaza la primera propuesta: el permiso se libera y una nueva propuesta (nueva acción, nueva aprobación) puede usarlo.",
+  "principal": "alice",
+  "request": "Cerrá apo-3.",
+  "scope": {
+    "grants": [
+      {
+        "task_ids": [
+          "apo-3"
+        ],
+        "fields": {
+          "status": [
+            "done"
+          ]
+        },
+        "max_uses": 1
+      }
+    ]
+  },
+  "model": {
+    "steps": [
+      {
+        "calls": [
+          {
+            "name": "update_task",
+            "args": {
+              "task_id": "apo-3",
+              "changes": {
+                "status": "done"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "calls": [
+          {
+            "name": "update_task",
+            "args": {
+              "task_id": "apo-3",
+              "changes": {
+                "status": "done"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "text": "Listo."
+      }
+    ]
+  },
+  "approval": [
+    "reject",
+    "approve"
+  ],
+  "expected": {
+    "final_status": "completed",
+    "approvals": [
+      {
+        "task_id": "apo-3",
+        "changes": {
+          "status": "done"
+        }
+      },
+      {
+        "task_id": "apo-3",
+        "changes": {
+          "status": "done"
+        }
+      }
+    ],
+    "writes": [
+      {
+        "task_id": "apo-3",
+        "changes": {
+          "status": "done"
+        }
+      }
+    ],
+    "blocked": [
+      {
+        "tool": "update_task",
+        "reason": "human_rejection",
+        "task_id": "apo-3"
+      }
+    ],
+    "update_task_deliveries": 1
+  }
+}

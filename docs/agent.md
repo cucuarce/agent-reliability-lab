@@ -55,6 +55,7 @@ posterior y necesitaría una política de aprobadores en el servidor.
 | `agent/scripted_model.py` | LLM falso determinístico (reanudable: decide según el historial) |
 | `agent/locks.py` | Lock por thread entre procesos, obligatorio (ver [reliability.md](reliability.md)) |
 | `agent/history.py` | Contrato de tool calling: cierre de llamadas interrumpidas y verificación antes del LLM |
+| `agent/scope.py` | Alcance del turno (`RequestScope`): escrituras autorizadas por la aplicación, reservas y sello (ver [scope.md](scope.md)) |
 | `agent/redaction.py` | Logger `arl.agent` con filtro de secretos (segunda barrera) |
 | `tracing/` | Eventos de traza por ejecución, consulta y logging (ver [observability.md](observability.md)) |
 | `agent/faults.py` | Inyección de fallos determinística entre el agente y el MCP (tests y evaluación) |

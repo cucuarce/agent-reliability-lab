@@ -9,8 +9,13 @@ import pytest
 from langchain_core.messages import ToolMessage
 
 from arl.agent.runtime import TurnStatus, approve, reject, resume, run_turn
+from arl.agent.scope import RequestScope, allow_update
 from arl.agent.scripted_model import ScriptedChatModel, call, say
 from arl.agent.tool_registry import INJECTED_WRITE_ARGS
+
+# Alcance explícito de cada turno (etapa 6A.1): exactamente lo que el test escribe.
+READ_ONLY = RequestScope.read_only()
+CLOSE_APO3 = RequestScope.writes(allow_update("apo-3", status=["done"]))
 
 pytestmark = pytest.mark.anyio
 
@@ -45,7 +50,7 @@ async def test_read_flow_queries_projects_and_tasks_without_approval(open_agent,
         [call("list_projects"), call("get_project", project_id="apollo"), say("Apollo: 4 tareas.")]
     )
     async with open_agent("alice", model) as (graph, _):
-        result = await run_turn(graph, thread_id="t-read", text="¿Apollo?")
+        result = await run_turn(graph, thread_id="t-read", text="¿Apollo?", scope=READ_ONLY)
         tools = await _tool_messages(graph, "t-read")
 
     assert (result.status, result.reply, result.approval_request) == (
@@ -76,7 +81,7 @@ async def test_llm_facing_tools_hide_identity_and_injected_arguments(open_agent)
 
 async def test_approved_write_runs_only_after_approval(open_agent, conn) -> None:
     async with open_agent("alice", _write_script()) as (graph, _):
-        paused = await run_turn(graph, thread_id="t-w", text="cerrá apo-3")
+        paused = await run_turn(graph, thread_id="t-w", text="cerrá apo-3", scope=CLOSE_APO3)
         assert paused.status is TurnStatus.AWAITING_APPROVAL
         assert _db(conn) == (("todo", 1), 0, 0)  # nada escrito antes de aprobar
 
@@ -106,7 +111,7 @@ async def test_approved_write_runs_only_after_approval(open_agent, conn) -> None
 
 async def test_rejected_write_never_reaches_the_server(open_agent, conn) -> None:
     async with open_agent("alice", _write_script()) as (graph, _):
-        paused = await run_turn(graph, thread_id="t-r", text="cerrá apo-3")
+        paused = await run_turn(graph, thread_id="t-r", text="cerrá apo-3", scope=CLOSE_APO3)
         done = await resume(
             graph,
             thread_id="t-r",
@@ -126,7 +131,7 @@ async def test_rejected_write_never_reaches_the_server(open_agent, conn) -> None
 async def test_viewer_write_is_rejected_by_the_server_after_approval(open_agent, conn) -> None:
     """El agente no decide permisos: la aprobación muestra el rol y el servidor rechaza."""
     async with open_agent("carol", _write_script()) as (graph, _):
-        paused = await run_turn(graph, thread_id="t-v", text="cerrá apo-3")
+        paused = await run_turn(graph, thread_id="t-v", text="cerrá apo-3", scope=CLOSE_APO3)
         assert paused.approval_request["my_role"] == "viewer"
         await resume(graph, thread_id="t-v", decision=approve(paused.approval_request))
         tools = await _tool_messages(graph, "t-v")
@@ -137,7 +142,7 @@ async def test_viewer_write_is_rejected_by_the_server_after_approval(open_agent,
 
 async def test_non_member_cannot_even_reach_approval(open_agent, conn) -> None:
     async with open_agent("dave", _write_script()) as (graph, _):
-        result = await run_turn(graph, thread_id="t-d", text="cerrá apo-3")
+        result = await run_turn(graph, thread_id="t-d", text="cerrá apo-3", scope=CLOSE_APO3)
         tools = await _tool_messages(graph, "t-d")
 
     assert result.status is TurnStatus.COMPLETED and result.approval_request is None

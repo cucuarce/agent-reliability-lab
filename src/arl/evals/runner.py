@@ -37,6 +37,7 @@ from arl.agent.runtime import (
     run_turn,
     thread_config,
 )
+from arl.agent.scope import RequestScope
 from arl.agent.state import Limits
 from arl.domain.models import Principal, TaskPatch
 from arl.evals.behavior import CaseModel
@@ -51,7 +52,10 @@ from arl.tracing.query import TraceNotFound, report_for
 # Texto de un ToolMessage de error: "ERROR [codigo] ..." si lo generó el agente, o
 # "ERROR Error executing tool <tool>: [codigo] ..." si viene del servidor (el SDK MCP antepone ese
 # prefijo a los ToolError). El origen importa: solo los del servidor pasan por el gateway.
-ERROR_TEXT = re.compile(r"^ERROR (?P<server>Error executing tool [a-z_]+: )?\[(?P<code>[a-z_]+)\]")
+ERROR_TEXT = re.compile(
+    r"^ERROR (?P<server>Error executing tool [a-z_]+: )?\[(?P<code>[a-z_]+)\]"
+    r"(?: \((?P<scope_reason>[a-z_]+)\))?"  # out_of_scope: "[out_of_scope] (field) ..."
+)
 MAX_OPERATIONS = 12  # run_turn + decisiones + recuperaciones: corta guiones mal diseñados
 EVAL_LIMITS = Limits(retry_initial_interval=0.0, retry_max_interval=0.0, retry_jitter=False)
 MODEL_KIND = "simulated:CaseModel(ScriptedChatModel)"
@@ -81,6 +85,8 @@ class Observation:
     external_keys: list[str] = field(default_factory=list)  # escrituras de otros usuarios
     followups: list[dict[str, Any]] = field(default_factory=list)
     injection_followed: bool = False
+    scope_mode: str = ""  # alcance con el que corrió el turno (kind del RequestScope)
+    scope_ledger: dict[str, dict[str, Any]] = field(default_factory=dict)
     trace: dict[str, Any] | None = None  # reporte arl.run-report de las trazas del caso
     trace_error: str | None = None
 
@@ -172,6 +178,17 @@ async def _open_agent(stack: AsyncExitStack, env: _Env, principal: str, model, p
     return graph, faulty
 
 
+def scope_for(case: EvalCase, *, enforce: bool = True) -> RequestScope:
+    """El alcance que la "aplicación" declara para el turno del caso.
+
+    Los casos v1 (anteriores a 6A.1) no declaran alcance: se ejecutan con el alcance histórico
+    sin restricciones, el único uso permitido de ``unrestricted_legacy_v1``, para que su
+    evidencia siga siendo comparable. Los casos v2 declaran el suyo."""
+    if case.scope is not None and enforce:
+        return case.scope
+    return RequestScope.unrestricted_legacy_v1()
+
+
 def _decide(case: EvalCase, index: int, request: dict[str, Any]) -> str:
     policy = case.approval
     if isinstance(policy, tuple):
@@ -216,6 +233,9 @@ async def _collect_conversation(graph, thread_id: str, obs: Observation) -> None
                         "tool": c["name"],
                         "task_id": args.get("task_id"),
                         "project_id": args.get("project_id"),
+                        "changes": args.get("changes")
+                        if isinstance(args.get("changes"), dict)
+                        else None,
                     }
                 )
         elif isinstance(message, ToolMessage) and str(message.content).startswith("ERROR "):
@@ -228,15 +248,22 @@ async def _collect_conversation(graph, thread_id: str, obs: Observation) -> None
                     "task_id": args.get("task_id"),
                     "code": match["code"] if match else "unknown",
                     "source": "server" if match and match["server"] else "agent",
+                    "scope_reason": match["scope_reason"] if match else None,
                 }
             )
+    obs.scope_ledger = dict(state.values.get("scope_ledger") or {})
 
 
-async def run_case(case: EvalCase, workdir: Path) -> Observation:
-    """Ejecuta el caso completo. ``InfraError`` si el entorno no se pudo preparar."""
+async def run_case(case: EvalCase, workdir: Path, *, enforce_scope: bool = True) -> Observation:
+    """Ejecuta el caso completo. ``InfraError`` si el entorno no se pudo preparar.
+
+    ``enforce_scope=False`` corre un caso v2 con el alcance histórico sin restricciones: mide
+    cómo se comportaría el sistema **sin** la defensa de 6A.1 (comparación antes/después)."""
     env = _Env(workdir)
     thread_id = f"eval-{case.id}"
     obs = Observation(case_id=case.id, thread_id=thread_id)
+    scope = scope_for(case, enforce=enforce_scope)
+    obs.scope_mode = scope.kind
     try:
         create_database(env.db, seed_for(case.seed)).close()
     except InfraError:
@@ -255,7 +282,7 @@ async def run_case(case: EvalCase, workdir: Path) -> Observation:
             graph, faulty = await _open_agent(stack, env, case.principal, model, plan, limits)
         except Exception as exc:
             raise InfraError(f"agente: {type(exc).__name__}") from None
-        await _main_flow(case, env, graph, faulty, obs)
+        await _main_flow(case, env, graph, faulty, obs, scope)
         await _collect_conversation(graph, thread_id, obs)
         obs.deliveries = [
             {"tool": name, "task_id": args.get("task_id"), "key": args.get("idempotency_key")}
@@ -278,11 +305,13 @@ async def run_case(case: EvalCase, workdir: Path) -> Observation:
     return obs
 
 
-async def _main_flow(case: EvalCase, env: _Env, graph, faulty, obs: Observation) -> None:
+async def _main_flow(
+    case: EvalCase, env: _Env, graph, faulty, obs: Observation, scope: RequestScope
+) -> None:
     decisions = 0
     recoveries = 0
     try:
-        result = await run_turn(graph, thread_id=obs.thread_id, text=case.request)
+        result = await run_turn(graph, thread_id=obs.thread_id, text=case.request, scope=scope)
         for _ in range(MAX_OPERATIONS):
             obs.statuses.append(result.status.value)
             if result.status is TurnStatus.AWAITING_APPROVAL:
@@ -344,7 +373,12 @@ async def _followup(case: EvalCase, env: _Env, followup) -> dict[str, Any]:
         try:
             thread_id = f"eval-{case.id}"
             if followup.action == "run_turn":
-                result = await run_turn(graph, thread_id=thread_id, text=followup.text)
+                result = await run_turn(
+                    graph,
+                    thread_id=thread_id,
+                    text=followup.text,
+                    scope=RequestScope.read_only(),
+                )
             elif followup.action == "continue_after_failure":
                 result = await continue_after_failure(graph, thread_id=thread_id)
             else:

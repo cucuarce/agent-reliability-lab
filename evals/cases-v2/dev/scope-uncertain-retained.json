@@ -1,0 +1,75 @@
+{
+  "schema": "arl.eval-case/2",
+  "id": "scope-uncertain-retained",
+  "category": "failure",
+  "description": "Escritura incierta sin recuperación: la reserva queda retenida y el resultado real se reconcilia con el audit_log.",
+  "principal": "alice",
+  "request": "Cerrá apo-3.",
+  "scope": {
+    "grants": [
+      {
+        "task_ids": [
+          "apo-3"
+        ],
+        "fields": {
+          "status": [
+            "done"
+          ]
+        },
+        "max_uses": 1
+      }
+    ]
+  },
+  "model": {
+    "steps": [
+      {
+        "calls": [
+          {
+            "name": "update_task",
+            "args": {
+              "task_id": "apo-3",
+              "changes": {
+                "status": "done"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "text": "Listo."
+      }
+    ]
+  },
+  "faults": [
+    {
+      "tool": "update_task",
+      "fault": "disconnect_after"
+    }
+  ],
+  "expected": {
+    "final_status": "write_uncertain",
+    "approvals": [
+      {
+        "task_id": "apo-3",
+        "changes": {
+          "status": "done"
+        }
+      }
+    ],
+    "writes": [
+      {
+        "task_id": "apo-3",
+        "changes": {
+          "status": "done"
+        }
+      }
+    ],
+    "write_states": {
+      "apo-3": "uncertain"
+    },
+    "reconciliation": {
+      "apo-3": "committed"
+    },
+    "update_task_deliveries": 3
+  }
+}

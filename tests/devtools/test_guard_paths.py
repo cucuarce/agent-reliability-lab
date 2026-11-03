@@ -121,6 +121,19 @@ def test_modifying_existing_eval_case_asks_human(guard, project: Path, tool: str
     assert "confirmación humana" in reason
 
 
+@pytest.mark.parametrize(
+    "parts", [("cases-v2", "holdout", "h.json"), ("baselines", "6a-before-d1-fix", "report.json")]
+)
+def test_v2_cases_and_historical_baselines_are_protected_too(guard, project: Path, parts) -> None:
+    """Etapa 6A.1: los casos v2 (incluidos los reservados) y la evidencia histórica."""
+    target = project.joinpath("evals", *parts)
+    target.parent.mkdir(parents=True)
+    assert guard.decide(_payload("Write", file_path=str(target)), str(project)) is None  # nuevo
+    target.write_text("{}", encoding="utf-8")
+    decision, _ = guard.decide(_payload("Edit", file_path=str(target)), str(project))
+    assert decision == "ask"
+
+
 def test_eval_case_relative_and_windows_style_paths(guard, project: Path) -> None:
     for path in (
         "evals/cases/existing.yaml",

@@ -15,7 +15,10 @@ Flujo::
 Efectos secundarios: ``execute_read`` (lectura, re-ejecutable), ``prepare_write`` (solo
 lecturas) y ``execute_write`` (la única escritura, idempotente por clave). ``await_approval``
 contiene únicamente ``interrupt()``: al reanudar se re-ejecuta desde el inicio sin efectos.
-Ningún nodo decide permisos: la autorización es exclusiva del servidor MCP.
+Ningún nodo decide permisos: la autorización es exclusiva del servidor MCP. El **alcance** del
+turno (``arl.agent.scope``) es otra cosa: lo que la aplicación autorizó escribir. ``dispatch``
+bloquea lo que queda fuera antes de pedir aprobación, ``prepare_write`` reserva el permiso y
+``execute_write`` verifica la reserva antes de enviar la escritura.
 """
 
 from __future__ import annotations
@@ -35,6 +38,7 @@ from pydantic import ValidationError
 from arl.agent.gateway import McpGateway, ToolCallFailed, ToolResult, domain_code
 from arl.agent.history import check_tool_protocol
 from arl.agent.locks import LockingRequired
+from arl.agent.scope import OutOfScope, ScopeViolation, load_bound, settle_state
 from arl.agent.state import (
     AgentState,
     ApprovalDecision,
@@ -117,8 +121,15 @@ def build_graph(
 
     # --- Nodos puros ----------------------------------------------------------------------------
 
-    def begin_turn(state: AgentState) -> dict[str, Any]:
+    def bound_scope(state: AgentState, config: RunnableConfig):
+        bound = load_bound(state.get("request_scope"))
+        bound.verify(thread_id=config["configurable"]["thread_id"],
+                     principal_id=gateway.principal_id)  # fmt: skip
+        return bound
+
+    def begin_turn(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
         check_principal(state)
+        bound_scope(state, config)  # un alcance alterado o ajeno detiene el turno
         return {
             "queue": [],
             "pending_write": None,
@@ -129,8 +140,13 @@ def build_graph(
             "status": "running",
         }
 
-    def dispatch(state: AgentState) -> dict[str, Any]:
-        """Descarta tool calls inválidas y aplica el límite; no ejecuta nada."""
+    def dispatch(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
+        """Descarta tool calls inválidas o fuera del alcance y aplica el límite; no ejecuta nada.
+
+        Una escritura fuera del alcance se bloquea acá: nunca llega a ``prepare_write`` ni al
+        humano. El motivo es un código fijo, sin los valores pedidos."""
+        bound = bound_scope(state, config)
+        ledger = state.get("scope_ledger") or {}
         queue = list(state["queue"])
         used = state["tool_calls_used"]
         messages: list[BaseMessage] = []
@@ -152,6 +168,16 @@ def build_graph(
                 messages.append(_error_message(queue.pop(0), "invalid_tool_call", str(exc)))
                 used += 1
                 continue
+            if spec.kind is ToolKind.WRITE:
+                write = cast(UpdateTaskArgs, args)
+                try:
+                    bound.check(write.task_id, write.changes.changes(), ledger)
+                except OutOfScope as exc:
+                    _trace_route(queue[0], "out_of_scope", args, scope_reason=exc.reason)
+                    messages.append(_error_message(queue.pop(0), "out_of_scope",
+                                                   f"({exc.reason}) {exc}"))  # fmt: skip
+                    used += 1
+                    continue
             decision = "execute" if spec.kind is ToolKind.READ else "requires_approval"
             _trace_route(queue[0], decision, args)
             break
@@ -195,6 +221,7 @@ def build_graph(
         pending = PendingWrite.model_validate(state["pending_write"])
         decision = ApprovalDecision.model_validate(state["approval"])
         reason = decision.reason or "sin motivo"
+        ledger = _settle(state, pending, "released")  # nunca se envió: el permiso vuelve
         message = ToolMessage(
             f"ERROR [rejected_by_user] el usuario rechazó la modificación de "
             f"'{pending.task_id}'. Motivo: {reason}",
@@ -202,7 +229,8 @@ def build_graph(
             name=pending.tool,
             status="error",
         )
-        return {"messages": [message], "pending_write": None, "approval": None}
+        return {"messages": [message], "pending_write": None, "approval": None,
+                "scope_ledger": ledger}  # fmt: skip
 
     # --- Nodos con efectos (lecturas MCP o la única escritura) -----------------------------------
 
@@ -271,6 +299,14 @@ def build_graph(
 
         changes = args.changes.changes()
         action_id, key = write_identity(config["configurable"]["thread_id"], call["id"])
+        # Se vuelve a verificar al reservar (sin contar la propia reserva si el nodo se reintenta).
+        ledger = {k: v for k, v in (state.get("scope_ledger") or {}).items() if k != action_id}
+        try:
+            grant_id = bound_scope(state, config).check(args.task_id, changes, ledger)
+        except OutOfScope as exc:
+            _trace_route(call, "out_of_scope", args, scope_reason=exc.reason)
+            return update | {"messages": [_error_message(call, "out_of_scope",
+                                                         f"({exc.reason}) {exc}")]}  # fmt: skip
         pending = PendingWrite.seal(
             action_id=action_id,
             tool_call_id=call["id"],
@@ -290,24 +326,44 @@ def build_graph(
             tool_call_id=tracing.safe_id(call["id"]),
             changed_fields=sorted(changes),
         )  # fmt: skip
+        entry = {"grant_id": grant_id, "state": "reserved", "task_id": args.task_id,
+                 "args_hash": pending.args_hash}  # fmt: skip
+        _trace_reservation(action_id, entry)
         return update | {
             "pending_write": pending.model_dump(),
             "approval": None,
             "approval_error": None,
+            "scope_ledger": {**ledger, action_id: entry},
         }
 
-    async def execute_write(state: AgentState) -> dict[str, Any]:
-        """La única escritura. Usa la acción aprobada y sellada, nunca argumentos del LLM."""
+    async def execute_write(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
+        """La única escritura. Usa la acción aprobada y sellada, nunca argumentos del LLM.
+
+        Un reintento (LangGraph o ``continue_after_failure``) es la misma acción con la misma
+        reserva; si la escritura queda incierta, la reserva sigue tomada."""
         check_principal(state)
         pending = PendingWrite.model_validate(state["pending_write"])
         decision = ApprovalDecision.model_validate(state["approval"])
         if decision.decision != "approve" or not decision.matches(pending):
             raise ApprovalMismatch("execute_write sin una aprobación válida para esta acción")
+        bound_scope(state, config)
+        reservation = (state.get("scope_ledger") or {}).get(pending.action_id)
+        if reservation is None or (reservation["state"], reservation["args_hash"]) != (
+            "reserved",
+            pending.args_hash,
+        ):
+            raise ScopeViolation("la acción aprobada no tiene una reserva del alcance del turno")
         with tracing.step("execute_write", pending.tool_call_id):
             result = await gateway.call(pending.tool, pending.server_arguments())
         _trace_write(pending, result)
+        outcome = (
+            domain_code(pending.tool, result.text)
+            if result.is_error or result.data is None
+            else result.data["outcome"]
+        )
         return {
             "messages": [_tool_message(pending.tool_call_id, pending.tool, result)],
+            "scope_ledger": _settle(state, pending, settle_state(outcome)),
             "pending_write": None,
             "approval": None,
         }
@@ -374,12 +430,36 @@ def build_graph(
     )
 
 
-def _trace_route(call: dict[str, Any], decision: str, args: Any = None) -> None:
+def _settle(state: AgentState, pending: PendingWrite, new_state: str) -> dict[str, Any]:
+    """Cierra la reserva de la acción (consumida, liberada, rechazada o invalidada)."""
+    ledger = dict(state.get("scope_ledger") or {})
+    entry = ledger.get(pending.action_id)
+    if entry is None:
+        return ledger
+    ledger[pending.action_id] = {**entry, "state": new_state}
+    _trace_reservation(pending.action_id, ledger[pending.action_id])
+    return ledger
+
+
+def _trace_reservation(action_id: str, entry: dict[str, Any]) -> None:
+    tracing.emit(
+        "scope_reservation",
+        action_id=action_id,
+        grant_id=entry["grant_id"],
+        task_id=tracing.safe_id(entry["task_id"]),
+        state=entry["state"],
+    )
+
+
+def _trace_route(
+    call: dict[str, Any], decision: str, args: Any = None, *, scope_reason: str | None = None
+) -> None:
     """Evento ``tool_call_routed``: lo que pidió el LLM, sin valores (solo ids y nombres)."""
     data: dict[str, Any] = {
         "tool_call_id": tracing.safe_id(call["id"]),
         "tool": tracing.safe_id(call["name"]),
         "decision": decision,
+        "scope_reason": scope_reason,
     }
     if isinstance(args, GetProjectArgs):
         data["project_id"] = args.project_id

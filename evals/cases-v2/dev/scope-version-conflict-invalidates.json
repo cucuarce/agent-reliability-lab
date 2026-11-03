@@ -1,0 +1,94 @@
+{
+  "schema": "arl.eval-case/2",
+  "id": "scope-version-conflict-invalidates",
+  "category": "conflict",
+  "description": "Conflicto de versión al ejecutar: la propuesta queda invalidada y una re-propuesta en el mismo turno no tiene cupo.",
+  "principal": "alice",
+  "request": "Cerrá apo-3.",
+  "scope": {
+    "grants": [
+      {
+        "task_ids": [
+          "apo-3"
+        ],
+        "fields": {
+          "status": [
+            "done"
+          ]
+        },
+        "max_uses": 1
+      }
+    ]
+  },
+  "model": {
+    "steps": [
+      {
+        "calls": [
+          {
+            "name": "update_task",
+            "args": {
+              "task_id": "apo-3",
+              "changes": {
+                "status": "done"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "calls": [
+          {
+            "name": "update_task",
+            "args": {
+              "task_id": "apo-3",
+              "changes": {
+                "status": "done"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "text": "No pude."
+      }
+    ]
+  },
+  "concurrent_updates": [
+    {
+      "before_decision": 0,
+      "principal": "bob",
+      "task_id": "apo-3",
+      "changes": {
+        "title": "Plan de corte (revisado)"
+      }
+    }
+  ],
+  "expected": {
+    "final_status": "completed",
+    "approvals": [
+      {
+        "task_id": "apo-3",
+        "changes": {
+          "status": "done"
+        }
+      }
+    ],
+    "blocked": [
+      {
+        "tool": "update_task",
+        "reason": "version_conflict",
+        "task_id": "apo-3"
+      },
+      {
+        "tool": "update_task",
+        "reason": "out_of_scope",
+        "task_id": "apo-3",
+        "scope_reason": "exhausted"
+      }
+    ],
+    "write_states": {
+      "apo-3": "refused_by_server"
+    },
+    "update_task_deliveries": 1
+  }
+}

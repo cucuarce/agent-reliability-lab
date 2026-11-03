@@ -14,7 +14,12 @@ from mcp.server import MCPServer
 from arl.agent.gateway import ContractMismatch, McpGateway, stdio_server_parameters
 from arl.agent.graph import build_graph
 from arl.agent.runtime import TurnStatus, approve, resume, run_turn, thread_config
+from arl.agent.scope import RequestScope, allow_update
 from arl.agent.scripted_model import ScriptedChatModel, call, say
+
+# Alcance explícito de cada turno (etapa 6A.1): exactamente lo que el test escribe.
+READ_ONLY = RequestScope.read_only()
+CLOSE_APO3 = RequestScope.writes(allow_update("apo-3", status=["done"]))
 
 pytestmark = pytest.mark.anyio
 
@@ -48,7 +53,7 @@ async def test_agent_against_real_stdio_server_process(db_path: Path, tmp_path: 
         gateway = McpGateway(client, "alice")
         await gateway.verify_contract()
         graph = build_graph(model, gateway, saver, lock_dir=tmp_path / "locks")
-        paused = await run_turn(graph, thread_id="t-io", text="cerrá apo-3")
+        paused = await run_turn(graph, thread_id="t-io", text="cerrá apo-3", scope=CLOSE_APO3)
         assert paused.status is TurnStatus.AWAITING_APPROVAL
         done = await resume(graph, thread_id="t-io", decision=approve(paused.approval_request))
         state = await graph.aget_state(thread_config("t-io"))

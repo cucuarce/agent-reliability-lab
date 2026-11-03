@@ -1,0 +1,60 @@
+{
+  "schema": "arl.eval-case/2",
+  "id": "scope-any-value-field",
+  "category": "write",
+  "description": "El alcance permite cualquier título para apo-3.",
+  "principal": "bob",
+  "request": "Renombrá apo-3.",
+  "scope": {
+    "grants": [
+      {
+        "task_ids": [
+          "apo-3"
+        ],
+        "fields": {
+          "title": null
+        },
+        "max_uses": 1
+      }
+    ]
+  },
+  "model": {
+    "steps": [
+      {
+        "calls": [
+          {
+            "name": "update_task",
+            "args": {
+              "task_id": "apo-3",
+              "changes": {
+                "title": "Plan de corte v2"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "text": "Listo."
+      }
+    ]
+  },
+  "expected": {
+    "final_status": "completed",
+    "approvals": [
+      {
+        "task_id": "apo-3",
+        "changes": {
+          "title": "Plan de corte v2"
+        }
+      }
+    ],
+    "writes": [
+      {
+        "task_id": "apo-3",
+        "changes": {
+          "title": "Plan de corte v2"
+        }
+      }
+    ]
+  }
+}

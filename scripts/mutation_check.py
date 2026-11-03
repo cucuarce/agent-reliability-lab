@@ -51,6 +51,9 @@ TESTS = [
     "tests/integration/test_tracing_domain_codes.py",
     "tests/unit/test_evals_graders.py",
     "tests/integration/test_evals_suite.py",
+    "tests/unit/test_request_scope.py",
+    "tests/integration/test_agent_scope.py",
+    "tests/integration/test_evals_scope.py",
 ]
 COPY_IGNORE = shutil.ignore_patterns(
     ".git", ".venv", "__pycache__", ".pytest_cache", ".ruff_cache", "var", "*.db", "htmlcov"
@@ -66,6 +69,7 @@ REDACTION = "src/arl/agent/redaction.py"
 EVAL_GRADERS = "src/arl/evals/graders.py"
 EVAL_METRICS = "src/arl/evals/metrics.py"
 EVAL_RUNNER = "src/arl/evals/runner.py"
+SCOPE = "src/arl/agent/scope.py"
 RECORDER = "src/arl/tracing/recorder.py"
 QUERY = "src/arl/tracing/query.py"
 LOGGING = "src/arl/tracing/logging_setup.py"
@@ -227,6 +231,35 @@ MUTANTS = [
     Mutant("trazas: un código desconocido se registra como de dominio", GATEWAY,
            "match.group(1) if match and match.group(1) in DOMAIN_CODES else None",
            "match.group(1) if match else None"),
+    # --- Alcance del turno (etapa 6A.1) ---
+    Mutant("alcance: dispatch no verifica el alcance (F1 vuelve)", GRAPH,
+           "                    bound.check(write.task_id, write.changes.changes(), ledger)",
+           "                    pass"),
+    Mutant("alcance: prepare_write reserva sin volver a verificar", GRAPH,
+           "            grant_id = bound_scope(state, config).check(args.task_id, changes, ledger)",
+           '            grant_id = "sin-verificar"'),
+    Mutant("alcance: execute_write no exige la reserva", GRAPH,
+           '            raise ScopeViolation("la acción aprobada no tiene una reserva del alcance '
+           'del turno")',
+           "            pass"),
+    Mutant("alcance: el rechazo humano consume el permiso", GRAPH,
+           '        ledger = _settle(state, pending, "released")',
+           '        ledger = _settle(state, pending, "consumed")'),
+    Mutant("alcance: las reservas abiertas no cuentan (sobreasignación)", SCOPE,
+           'COUNTED_STATES = frozenset({"reserved", "consumed", "refused", "invalidated"})',
+           'COUNTED_STATES = frozenset({"consumed", "refused", "invalidated"})'),
+    Mutant("alcance: un rechazo definitivo del servidor devuelve el permiso", SCOPE,
+           'COUNTED_STATES = frozenset({"reserved", "consumed", "refused", "invalidated"})',
+           'COUNTED_STATES = frozenset({"reserved", "consumed", "invalidated"})'),
+    Mutant("alcance: version_conflict libera en vez de invalidar", SCOPE,
+           '        return "invalidated"', '        return "released"'),
+    Mutant("alcance: el sello no se verifica", SCOPE,
+           "        if _sha256(body) != self.scope_hash:", "        if False:"),
+    Mutant("alcance: no se verifica el thread ni el principal", SCOPE,
+           "        if (self.thread_id, self.principal_id) != (thread_id, principal_id):",
+           "        if False:"),
+    Mutant("evals: la medición 'antes' corre con la defensa", EVAL_RUNNER,
+           "    if case.scope is not None and enforce:", "    if case.scope is not None:"),
     # --- Evaluador (etapa 6A): un grader roto no puede pasar desapercibido ---
     Mutant("evals: approved_only nunca falla", EVAL_GRADERS,
            '            all(a["idempotency_key"] in approved for a in own),', "            True,"),

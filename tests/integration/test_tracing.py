@@ -24,12 +24,17 @@ from arl.agent.runtime import (
     resume,
     run_turn,
 )
+from arl.agent.scope import RequestScope, allow_update
 from arl.agent.scripted_model import ScriptedChatModel, call, say
 from arl.agent.state import write_identity
 from arl.tracing import recorder
 from arl.tracing.events import EVENT_SCHEMAS, validate_event
 from arl.tracing.logging_setup import UNSAFE_DEBUG_LOGGERS, configure_logging
 from arl.tracing.query import load_events, load_paths, reconstruct, render, thread_paths
+
+# Alcance explícito de cada turno (etapa 6A.1): exactamente lo que el test escribe.
+READ_ONLY = RequestScope.read_only()
+CLOSE_APO3 = RequestScope.writes(allow_update("apo-3", status=["done"]))
 
 pytestmark = pytest.mark.anyio
 
@@ -66,7 +71,9 @@ def _raw(trace_dir: Path) -> str:
 
 async def _approved_flow(open_faulty_agent, plan=None):
     async with open_faulty_agent("alice", _model(), plan) as (graph, faulty):
-        paused = await run_turn(graph, thread_id=THREAD, text="mirá apollo y cerrá apo-3")
+        paused = await run_turn(
+            graph, thread_id=THREAD, text="mirá apollo y cerrá apo-3", scope=CLOSE_APO3
+        )
         done = await resume(graph, thread_id=THREAD, decision=approve(paused.approval_request))
     return paused, done, faulty
 
@@ -119,7 +126,7 @@ async def test_events_correlate_thread_run_tool_call_and_audit(
 
 async def test_rejected_write_is_reconstructed_as_never_sent(open_faulty_agent, trace_dir) -> None:
     async with open_faulty_agent("alice", _model()) as (graph, _):
-        paused = await run_turn(graph, thread_id=THREAD, text="cerrá apo-3")
+        paused = await run_turn(graph, thread_id=THREAD, text="cerrá apo-3", scope=CLOSE_APO3)
         await resume(graph, thread_id=THREAD, decision=reject(paused.approval_request, CANARY))
     events = _all_events(trace_dir)
     (write,) = reconstruct(events)["writes"]
@@ -179,7 +186,7 @@ async def test_crash_between_processes_is_reconstructed_and_recovered(
     open_agent, db_path: Path, checkpoints_path: Path, trace_dir: Path, tmp_path: Path, conn
 ) -> None:
     async with open_agent("alice", _model()) as (graph, _):
-        paused = await run_turn(graph, thread_id=THREAD, text="cerrá apo-3")
+        paused = await run_turn(graph, thread_id=THREAD, text="cerrá apo-3", scope=CLOSE_APO3)
     request = tmp_path / "request.json"
     request.write_text(json.dumps(paused.approval_request), encoding="utf-8")
     proc = subprocess.run(
@@ -213,7 +220,7 @@ async def test_busy_run_is_traced_with_its_own_final_status(
     open_agent, lock_dir: Path, trace_dir: Path
 ) -> None:
     async with open_agent("alice", _model()) as (graph, _):
-        paused = await run_turn(graph, thread_id=THREAD, text="cerrá apo-3")
+        paused = await run_turn(graph, thread_id=THREAD, text="cerrá apo-3", scope=CLOSE_APO3)
         with thread_lock(lock_dir, THREAD), pytest.raises(ThreadBusy):
             await resume(graph, thread_id=THREAD, decision=approve(paused.approval_request))
     report = reconstruct(_all_events(trace_dir))
@@ -229,7 +236,12 @@ async def test_sensitive_values_never_reach_the_traces(
 ) -> None:
     model = _model({"title": f"password={CANARY}", "status": "blocked"})
     async with open_faulty_agent("alice", model) as (graph, faulty):
-        paused = await run_turn(graph, thread_id=THREAD, text=f"usá la clave {CANARY}")
+        paused = await run_turn(
+            graph,
+            thread_id=THREAD,
+            text=f"usá la clave {CANARY}",
+            scope=RequestScope.writes(allow_update("apo-3", title=None, status=["blocked"])),
+        )
         real = faulty.call_tool
 
         async def leaky(name, arguments, **kwargs):
@@ -317,7 +329,7 @@ def test_schema_covers_every_event_type() -> None:
     from arl.tracing.events import json_schema
 
     schema = json_schema()
-    assert schema["schema"] == "arl.trace/1"
+    assert schema["schema"] == "arl.trace/2"  # 6A.1: alcance del turno
     assert set(schema["events"]) == set(EVENT_SCHEMAS)
 
 
@@ -348,7 +360,9 @@ async def test_debug_logging_does_not_dump_checkpoints_unless_explicitly_allowed
     stream = io.StringIO()
     configure_logging("DEBUG", stream=stream, allow_unsafe_debug=allow_unsafe_debug)
     async with open_faulty_agent("alice", _model()) as (graph, _):
-        await run_turn(graph, thread_id=THREAD, text=f"texto del usuario {CANARY}")
+        await run_turn(
+            graph, thread_id=THREAD, text=f"texto del usuario {CANARY}", scope=CLOSE_APO3
+        )
     assert (CANARY in stream.getvalue()) is allow_unsafe_debug
     assert "DEBUG" in stream.getvalue()  # el resto del DEBUG sí se emite
 

@@ -38,6 +38,11 @@ concretas.
   de invocar al LLM. Tests: `tests/integration/test_agent_history.py`.
 - Si agregás un mutante o cambiás código mutado, actualizá `scripts/mutation_check.py`: aborta
   cuando un fragmento deja de coincidir.
-- **No hay reglas de permisos en el agente:** la autorización es exclusiva del servidor MCP.
+- **No hay reglas de permisos en el agente:** la autorización por rol es exclusiva del servidor
+  MCP. El **alcance del turno** (`arl.agent.scope`) es otra cosa: lo que la aplicación autorizó
+  escribir. Se verifica en `dispatch` (antes de pedir aprobación), se reserva en
+  `prepare_write` y se exige en `execute_write`. Ningún nodo modifica `request_scope`; solo los
+  nodos deterministas escriben `scope_ledger`. Nunca liberes una reserva incierta ni consumida.
+  Tests: `tests/integration/test_agent_scope.py`, `tests/unit/test_request_scope.py`.
 - Toda tool nueva se registra en `src/arl/agent/tool_registry.py` con su `ToolKind`. Su
   contrato lo verifica `McpGateway.verify_contract`.

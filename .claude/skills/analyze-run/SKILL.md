@@ -39,12 +39,15 @@ como un único argumento, sin agregar otros comandos, redirecciones ni pipes.
    final se desconoce. No lo presentes como error del agente sin evidencia.
 6. **`replayed: true`** significa que el servidor ya tenía esa escritura confirmada (misma
    clave): no es un duplicado.
-7. **La ausencia de un evento no es evidencia.** Un estado con `basis: "absence"`
+7. **`out_of_scope`** (decisión de `tool_call_routed`, sección `scope` del reporte): la escritura
+   quedó fuera del alcance que declaró la aplicación y se bloqueó **antes** de pedir aprobación;
+   nunca llegó al servidor. Las reservas (`scope.reservations`) muestran cada permiso usado.
+8. **La ausencia de un evento no es evidencia.** Un estado con `basis: "absence"`
    (`awaiting_approval`, `not_prepared`) va en "Hipótesis". Si `integrity.ok` es `false`
    (duplicados, conflictos, huecos de `seq`, otra versión, varios threads, reporte alterado),
    decilo en el resumen y no saques conclusiones de lo que falta. El `audit_log` del servidor es
    la única fuente autoritativa de escrituras confirmadas.
-8. Las trazas no contienen textos de mensajes ni valores de cambios (solo ids, nombres de campos,
+9. Las trazas no contienen textos de mensajes ni valores de cambios (solo ids, nombres de campos,
    códigos y duraciones). No inventes contenido que no está.
 
 ## Pasos

@@ -26,6 +26,7 @@ from arl.agent.gateway import ToolCallFailed
 from arl.agent.history import close_unanswered
 from arl.agent.locks import LockingRequired, ThreadBusy, thread_lock
 from arl.agent.redaction import LOGGER
+from arl.agent.scope import BoundScope, RequestScope, ScopeMismatch, ScopeViolation
 from arl.agent.state import ApprovalDecision, ApprovalMismatch, PendingWrite, PrincipalMismatch
 from arl.tracing import recorder as tracing
 from arl.tracing.recorder import JsonlTraceSink, RunContext
@@ -117,6 +118,8 @@ _REFUSALS = (
     NoPendingApproval,
     ThreadNeedsRecovery,
     NothingToContinue,
+    ScopeMismatch,
+    ScopeViolation,
 )
 
 
@@ -125,12 +128,13 @@ async def _traced(
     thread_id: str,
     operation: str,
     body: Callable[[RunContext], Awaitable[TurnResult]],
+    scope_kind: str | None = None,
 ) -> TurnResult:
     """Una ejecución observable: ``run_started`` y siempre ``run_finished`` (salvo crash del
     proceso), con el estado final, la duración y los conteos. Las excepciones se re-lanzan."""
     sink = _trace_sink(graph)
     with tracing.run_scope(sink, thread_id=thread_id, principal_id=bound_principal(graph)) as run:
-        run.emit("run_started", {"operation": operation})
+        run.emit("run_started", {"operation": operation, "scope": scope_kind})
 
         def finish(status: str, refusal: str | None = None) -> None:
             run.emit(
@@ -201,8 +205,17 @@ async def _invoke(
     return await _result(graph, thread_id)
 
 
-async def run_turn(graph: CompiledStateGraph, *, thread_id: str, text: str) -> TurnResult:
-    """Inicia un turno. Política de historial (ver ``arl.agent.history``):
+async def run_turn(
+    graph: CompiledStateGraph, *, thread_id: str, text: str, scope: RequestScope
+) -> TurnResult:
+    """Inicia un turno con el **alcance** que la aplicación autorizó (``arl.agent.scope``).
+
+    ``scope`` es obligatorio y lo declara la aplicación a partir de una entrada explícita del
+    usuario; nunca del LLM ni del texto del pedido. Se liga a este thread y a la identidad del
+    proceso, se sella y rige hasta que termine el turno, incluidas sus aprobaciones,
+    reanudaciones y recuperaciones. ``resume`` y ``continue_after_failure`` no lo cambian.
+
+    Política de historial (ver ``arl.agent.history``):
 
     - aprobación pendiente → ``ThreadAwaitingApproval`` (hay que decidir);
     - escritura aprobada sin confirmar → ``ThreadNeedsRecovery``: no se cierra ni se descarta,
@@ -211,10 +224,14 @@ async def run_turn(graph: CompiledStateGraph, *, thread_id: str, text: str) -> T
       antes del mensaje nuevo (no tuvieron efectos).
     """
 
+    if not isinstance(scope, RequestScope):
+        raise TypeError("run_turn requiere un RequestScope declarado por la aplicación")
+
     async def body(run: RunContext) -> TurnResult:
         with thread_lock(_lock_dir(graph), thread_id):
             snapshot = await graph.aget_state(thread_config(thread_id))
             principal_id = _check_owner(graph, snapshot.values)  # antes de escribir en el thread
+            bound = BoundScope.bind(scope, thread_id=thread_id, principal_id=principal_id)
             if snapshot.interrupts:
                 raise ThreadAwaitingApproval(
                     f"el thread '{thread_id}' tiene una aprobación pendiente"
@@ -232,10 +249,19 @@ async def run_turn(graph: CompiledStateGraph, *, thread_id: str, text: str) -> T
                         "reason": "not_executed",
                     },
                 )
-            payload = {"messages": [*closed, HumanMessage(text)], "principal_id": principal_id}
+            payload = {
+                "messages": [*closed, HumanMessage(text)],
+                "principal_id": principal_id,
+                # Un alcance nuevo por turno lógico, con su registro de reservas vacío. No pisa
+                # reservas abiertas: con una aprobación pendiente o una escritura incierta, el
+                # turno ya se rechazó arriba.
+                "request_scope": bound.model_dump(mode="json"),
+                "scope_ledger": {},
+            }
             return await _invoke(graph, payload, thread_id, run)
 
-    return await _traced(graph, thread_id, "run_turn", body)
+    kind = "read_only" if scope.kind == "explicit" and not scope.write_limit else scope.kind
+    return await _traced(graph, thread_id, "run_turn", body, scope_kind=kind)
 
 
 async def resume(

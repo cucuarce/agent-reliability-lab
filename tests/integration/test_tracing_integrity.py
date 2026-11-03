@@ -16,9 +16,15 @@ import pytest
 
 from arl.agent.faults import EVERY_CALL, Fault
 from arl.agent.runtime import approve, resume, run_turn
+from arl.agent.scope import RequestScope, allow_update
 from arl.agent.scripted_model import ScriptedChatModel, call, say
 from arl.tracing.__main__ import main
+from arl.tracing.events import SCHEMA_VERSION
 from arl.tracing.query import REPORT_SCHEMA, load_events, reconstruct
+
+# Alcance explícito de cada turno (etapa 6A.1): exactamente lo que el test escribe.
+READ_ONLY = RequestScope.read_only()
+CLOSE_APO3 = RequestScope.writes(allow_update("apo-3", status=["done"]))
 
 pytestmark = pytest.mark.anyio
 
@@ -33,7 +39,7 @@ async def _uncertain_thread(open_faulty_agent, trace_dir: Path) -> list[Path]:
     )
     plan = {("update_task", EVERY_CALL): Fault.DISCONNECT_AFTER}
     async with open_faulty_agent("alice", model, plan) as (graph, _):
-        paused = await run_turn(graph, thread_id=THREAD, text="cerrá apo-3")
+        paused = await run_turn(graph, thread_id=THREAD, text="cerrá apo-3", scope=CLOSE_APO3)
         await resume(graph, thread_id=THREAD, decision=approve(paused.approval_request))
     first, second = sorted(trace_dir.rglob("*.jsonl"), key=lambda p: p.stat().st_mtime)
     return [first, second]
@@ -117,7 +123,7 @@ async def test_unknown_schema_versions_are_counted_apart(
 ) -> None:
     _, resumed = await _uncertain_thread(open_faulty_agent, trace_dir)
     lines = _lines(resumed)
-    future = [line.replace('"v":1', '"v":2', 1) for line in lines[-2:]]
+    future = [line.replace(f'"v":{SCHEMA_VERSION}', '"v":99', 1) for line in lines[-2:]]
     events, invalid = load_events(_write(tmp_path / "v2.jsonl", lines[:-2] + future))
     report = reconstruct(events, invalid, unsupported_lines=2)
     assert report["integrity"]["unsupported_version_lines"] == 2
@@ -129,8 +135,8 @@ async def test_unknown_versions_are_reported_by_the_cli(
     open_faulty_agent, trace_dir, tmp_path, capsys
 ) -> None:
     _, resumed = await _uncertain_thread(open_faulty_agent, trace_dir)
-    path = _write(tmp_path / "v2.jsonl", [line.replace('"v":1', '"v":2', 1) for line in
-                                          _lines(resumed)])  # fmt: skip
+    future = [line.replace(f'"v":{SCHEMA_VERSION}', '"v":99', 1) for line in _lines(resumed)]
+    path = _write(tmp_path / "v99.jsonl", future)
     assert main(["show", str(path)]) == 2
     assert "versión" in capsys.readouterr().err
 
@@ -304,3 +310,18 @@ def _status_line(report: dict) -> str:
     from arl.tracing.query import render
 
     return render(report).splitlines()[1]
+
+
+def test_v1_traces_written_before_the_scope_remain_readable(tmp_path: Path) -> None:
+    """arl.trace/2 es un superconjunto de v1: las trazas históricas se siguen reconstruyendo."""
+    base = {"v": 1, "run_id": "b" * 16, "thread_id": "t", "principal_id": "alice"}
+    lines = [
+        json.dumps(base | {"ts": "2026-11-03T00:00:00+00:00", "seq": 1, "event": "run_started",
+                           "data": {"operation": "run_turn"}}),
+        json.dumps(base | {"ts": "2026-11-03T00:00:01+00:00", "seq": 2, "event": "run_finished",
+                           "data": {"operation": "run_turn", "status": "completed",
+                                    "duration_ms": 1.0, "counts": {}}}),
+    ]  # fmt: skip
+    report = _report(_write(tmp_path / "v1.jsonl", lines))
+    assert report["final_status"] == "completed" and report["integrity"]["ok"]
+    assert report["scope"] == {"kinds": [], "blocked": [], "reservations": {}}
