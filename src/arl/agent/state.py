@@ -28,6 +28,12 @@ class Limits(BaseModel):
 
     max_tool_calls: int = Field(default=8, ge=1)  # tool calls del LLM por turno de usuario
     max_model_turns: int = Field(default=6, ge=1)  # invocaciones del LLM por turno de usuario
+    # Reintentos automáticos de fallos transitorios del MCP (por nodo, backoff exponencial acotado).
+    # Espera por reintento: min(max_interval, initial * 2^(n-1)) + jitter de LangGraph (0 a 1 s).
+    max_attempts: int = Field(default=3, ge=1, le=10)
+    retry_initial_interval: float = Field(default=0.5, ge=0)
+    retry_max_interval: float = Field(default=4.0, ge=0)
+    retry_jitter: bool = True
 
     @property
     def recursion_limit(self) -> int:

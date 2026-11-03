@@ -1,22 +1,29 @@
 """Interfaz pública y confiable del agente: iniciar un turno, consultar su estado y reanudar.
 
-Es la frontera del modelo de seguridad del MVP. Toda función verifica, antes de leer o escribir,
-que el thread pertenezca al principal del proceso. La identidad no es un parámetro: es la del
+Es la frontera del modelo de seguridad del MVP. Toda función toma el lock del thread (obligatorio:
+sin ``lock_dir`` falla con ``LockingRequired``) y verifica, antes de leer o escribir, que el
+thread pertenezca al principal del proceso. La identidad no es un parámetro: es la del
 proceso, ligada al grafo en ``build_graph`` a partir del gateway MCP. Invocar el grafo
 directamente queda fuera del modelo de seguridad (ver docs/agent.md).
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import uuid
+from dataclasses import dataclass, replace
 from enum import StrEnum
+from pathlib import Path
 from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Command
 
-from arl.agent.state import ApprovalDecision, ApprovalMismatch, PrincipalMismatch
+from arl.agent.gateway import ToolCallFailed
+from arl.agent.history import close_unanswered
+from arl.agent.locks import LockingRequired, ThreadBusy, thread_lock
+from arl.agent.redaction import LOGGER
+from arl.agent.state import ApprovalDecision, ApprovalMismatch, PendingWrite, PrincipalMismatch
 
 # Cada superpaso se persiste antes del siguiente: tras un crash se reanuda desde el último nodo
 # completado y nunca se pierde una aprobación ya registrada.
@@ -28,6 +35,13 @@ class TurnStatus(StrEnum):
     AWAITING_APPROVAL = "awaiting_approval"
     TOOL_LIMIT = "tool_limit"
     TURN_LIMIT = "turn_limit"
+    # Un fallo detuvo la ejecución antes de cualquier escritura: se puede continuar sin riesgo.
+    INTERRUPTED = "interrupted"
+    # Una escritura aprobada no pudo confirmarse: pudo haber ocurrido o no. Continuar la reintenta
+    # con la misma clave de idempotencia, así que nunca se duplica.
+    WRITE_UNCERTAIN = "write_uncertain"
+    # Otro proceso está ejecutando el thread ahora: el estado se consultará cuando termine.
+    BUSY = "busy"
 
 
 class ThreadAwaitingApproval(RuntimeError):
@@ -38,12 +52,23 @@ class NoPendingApproval(RuntimeError):
     """Se intentó reanudar un thread que no está esperando aprobación."""
 
 
+class ThreadNeedsRecovery(RuntimeError):
+    """Hay una escritura aprobada sin confirmar: hay que continuarla, no iniciar otro turno."""
+
+
+class NothingToContinue(RuntimeError):
+    """``continue_after_failure`` sobre un thread que no quedó interrumpido."""
+
+
 @dataclass(frozen=True)
 class TurnResult:
     status: TurnStatus
     reply: str
     approval_request: dict[str, Any] | None = None
     approval_error: str | None = None  # por qué se rechazó la última decisión entregada
+    error: str | None = None  # código y detalle seguro del fallo que detuvo la ejecución
+    pending_action: dict[str, Any] | None = None  # la escritura aprobada sin confirmar
+    trace_id: str | None = None  # correlaciona el resultado con el log de la ejecución
 
 
 def thread_config(thread_id: str) -> dict[str, Any]:
@@ -63,46 +88,113 @@ def _check_owner(graph: CompiledStateGraph, values: dict[str, Any]) -> str:
     return principal_id
 
 
+def _lock_dir(graph: CompiledStateGraph) -> Path:
+    """Sin lock no se ejecuta: un grafo compilado aparte o con la config sobrescrita falla."""
+    value = graph.config["configurable"].get("lock_dir")
+    if not value:
+        raise LockingRequired(
+            "el grafo no tiene lock_dir: construilo con build_graph(lock_dir=...)"
+        )
+    return Path(value)
+
+
+async def _invoke(graph: CompiledStateGraph, payload: Any, thread_id: str) -> TurnResult:
+    """Ejecuta el grafo y convierte los fallos del MCP en un estado claro y reanudable.
+
+    Los reintentos automáticos (acotados) ya ocurrieron dentro del nodo; si se agotaron o el
+    fallo es definitivo, el checkpoint queda antes del nodo fallido. Se llama con el lock del
+    thread tomado. El log lleva diagnóstico (operación, código, tipo de error, trace_id), nunca
+    el texto del error original.
+    """
+    trace_id = uuid.uuid4().hex[:16]
+    config = {**thread_config(thread_id), "metadata": {"trace_id": trace_id}}
+    try:
+        await graph.ainvoke(payload, config, durability=DURABILITY)
+    except ToolCallFailed as exc:
+        result = await _result(graph, thread_id)
+        LOGGER.warning(
+            "ejecución detenida trace_id=%s thread=%s operation=%s code=%s error_type=%s status=%s",
+            trace_id, thread_id, exc.tool, exc.code, exc.error_type, result.status,
+        )  # fmt: skip
+        return replace(result, error=f"[{exc.code}] {exc.tool}", trace_id=trace_id)
+    return replace(await _result(graph, thread_id), trace_id=trace_id)
+
+
 async def run_turn(graph: CompiledStateGraph, *, thread_id: str, text: str) -> TurnResult:
-    config = thread_config(thread_id)
-    snapshot = await graph.aget_state(config)
-    principal_id = _check_owner(graph, snapshot.values)  # antes de escribir nada en el thread
-    if snapshot.interrupts:
-        raise ThreadAwaitingApproval(f"el thread '{thread_id}' tiene una aprobación pendiente")
-    payload = {"messages": [HumanMessage(text)], "principal_id": principal_id}
-    await graph.ainvoke(payload, config, durability=DURABILITY)
-    return await turn_result(graph, thread_id)
+    """Inicia un turno. Política de historial (ver ``arl.agent.history``):
+
+    - aprobación pendiente → ``ThreadAwaitingApproval`` (hay que decidir);
+    - escritura aprobada sin confirmar → ``ThreadNeedsRecovery``: no se cierra ni se descarta,
+      porque su resultado se desconoce;
+    - lectura o preparación interrumpida → sus tool calls se cierran con ``[not_executed]``
+      antes del mensaje nuevo (no tuvieron efectos).
+    """
+    with thread_lock(_lock_dir(graph), thread_id):
+        snapshot = await graph.aget_state(thread_config(thread_id))
+        principal_id = _check_owner(graph, snapshot.values)  # antes de escribir en el thread
+        if snapshot.interrupts:
+            raise ThreadAwaitingApproval(f"el thread '{thread_id}' tiene una aprobación pendiente")
+        if snapshot.next == ("execute_write",):
+            raise ThreadNeedsRecovery(f"el thread '{thread_id}' requiere continue_after_failure")
+        closed = close_unanswered(snapshot.values.get("messages", []))
+        payload = {"messages": [*closed, HumanMessage(text)], "principal_id": principal_id}
+        return await _invoke(graph, payload, thread_id)
 
 
 async def resume(
     graph: CompiledStateGraph, *, thread_id: str, decision: ApprovalDecision
 ) -> TurnResult:
     """Entrega la decisión humana. Se valida antes de tocar el grafo; el nodo vuelve a validar."""
-    config = thread_config(thread_id)
-    snapshot = await graph.aget_state(config)
-    if not snapshot.interrupts:
-        raise NoPendingApproval(f"el thread '{thread_id}' no espera ninguna aprobación")
-    _check_owner(graph, snapshot.values)
-    request = snapshot.interrupts[0].value
-    if (decision.action_id, decision.args_hash) != (request["action_id"], request["args_hash"]):
-        raise ApprovalMismatch("la decisión no corresponde a la acción pendiente")
-    await graph.ainvoke(Command(resume=decision.model_dump()), config, durability=DURABILITY)
-    return await turn_result(graph, thread_id)
+    with thread_lock(_lock_dir(graph), thread_id):
+        snapshot = await graph.aget_state(thread_config(thread_id))
+        if not snapshot.interrupts:
+            raise NoPendingApproval(f"el thread '{thread_id}' no espera ninguna aprobación")
+        _check_owner(graph, snapshot.values)
+        request = snapshot.interrupts[0].value
+        if (decision.action_id, decision.args_hash) != (
+            request["action_id"],
+            request["args_hash"],
+        ):
+            raise ApprovalMismatch("la decisión no corresponde a la acción pendiente")
+        return await _invoke(graph, Command(resume=decision.model_dump()), thread_id)
 
 
 async def continue_after_failure(graph: CompiledStateGraph, *, thread_id: str) -> TurnResult:
-    """Reintenta desde el último checkpoint (p. ej. tras un crash dentro de execute_write)."""
-    config = thread_config(thread_id)
-    _check_owner(graph, (await graph.aget_state(config)).values)
-    await graph.ainvoke(None, config, durability=DURABILITY)
-    return await turn_result(graph, thread_id)
+    """Retoma una ejecución interrumpida desde su último checkpoint (mismo nodo, misma acción).
+
+    Nunca se saltea la aprobación: si el fallo ocurrió antes de aprobar, se vuelve a pedir; si
+    ocurrió en execute_write, se reintenta la acción ya aprobada con la misma clave.
+    """
+    with thread_lock(_lock_dir(graph), thread_id):
+        snapshot = await graph.aget_state(thread_config(thread_id))
+        _check_owner(graph, snapshot.values)
+        if snapshot.interrupts:
+            raise ThreadAwaitingApproval(
+                f"el thread '{thread_id}' espera una decisión, no un reintento"
+            )
+        if not snapshot.next:
+            raise NothingToContinue(f"el thread '{thread_id}' no tiene una ejecución interrumpida")
+        return await _invoke(graph, None, thread_id)
 
 
 async def turn_result(graph: CompiledStateGraph, thread_id: str) -> TurnResult:
-    """Estado visible de un thread; solo para su dueño (incluye la solicitud de aprobación)."""
+    """Estado visible de un thread; solo para su dueño (incluye la solicitud de aprobación).
+
+    Si otro proceso lo está ejecutando, devuelve ``BUSY`` en vez de un estado intermedio.
+    """
+    lock_dir = _lock_dir(graph)
+    _check_owner(graph, (await graph.aget_state(thread_config(thread_id))).values)
+    try:
+        with thread_lock(lock_dir, thread_id):
+            return await _result(graph, thread_id)
+    except ThreadBusy:
+        return TurnResult(TurnStatus.BUSY, "")
+
+
+async def _result(graph: CompiledStateGraph, thread_id: str) -> TurnResult:
+    """Interna: todos sus llamadores ya verificaron el dueño y tienen el lock."""
     snapshot = await graph.aget_state(thread_config(thread_id))
     values = snapshot.values
-    _check_owner(graph, values)
     replies = [m for m in values.get("messages", []) if isinstance(m, AIMessage)]
     reply = replies[-1].text if replies else ""
     if snapshot.interrupts:
@@ -112,6 +204,13 @@ async def turn_result(graph: CompiledStateGraph, thread_id: str) -> TurnResult:
             snapshot.interrupts[0].value,
             values.get("approval_error"),
         )
+    if snapshot.next == ("execute_write",):  # la escritura aprobada no llegó a confirmarse
+        pending = PendingWrite.model_validate(values["pending_write"])
+        # La clave permite reconciliar a mano (ledger y auditoría del servidor la registran).
+        action = pending.approval_request() | {"idempotency_key": pending.idempotency_key}
+        return TurnResult(TurnStatus.WRITE_UNCERTAIN, reply, pending_action=action)
+    if snapshot.next or values.get("status") == "running":  # ejecución que no terminó
+        return TurnResult(TurnStatus.INTERRUPTED, reply)
     return TurnResult(TurnStatus(values["status"]), reply)
 
 

@@ -47,7 +47,8 @@ async def main(db_path: str, checkpoints: str, thread_id: str, request_file: str
             return result
 
         gateway.call = die_after_commit  # type: ignore[method-assign]
-        graph = build_graph(model, gateway, saver)
+        # Con lock: el test verifica además que el sistema lo libera cuando el proceso muere.
+        graph = build_graph(model, gateway, saver, lock_dir=Path(checkpoints).parent / "locks")
         await resume(graph, thread_id=thread_id, decision=approve(request))
     sys.exit(1)  # no debería llegar acá
 

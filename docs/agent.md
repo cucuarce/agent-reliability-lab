@@ -53,6 +53,13 @@ posterior y necesitaría una política de aprobadores en el servidor.
 | `agent/graph.py` | Nodos y rutas del grafo |
 | `agent/runtime.py` | `run_turn`, `resume`, `continue_after_failure`, `turn_result` |
 | `agent/scripted_model.py` | LLM falso determinístico (reanudable: decide según el historial) |
+| `agent/locks.py` | Lock por thread entre procesos, obligatorio (ver [reliability.md](reliability.md)) |
+| `agent/history.py` | Contrato de tool calling: cierre de llamadas interrumpidas y verificación antes del LLM |
+| `agent/redaction.py` | Logger `arl.agent` con filtro de secretos (segunda barrera) |
+| `agent/faults.py` | Inyección de fallos determinística entre el agente y el MCP (tests y evaluación) |
+
+Clasificación de fallos, reintentos y estados `INTERRUPTED` / `WRITE_UNCERTAIN` / `BUSY`: ver
+[reliability.md](reliability.md).
 
 ## Grafo
 
@@ -71,7 +78,7 @@ dispatch ─┬→ execute_read ─→ dispatch
 | Nodo | Efectos | Qué hace |
 |---|---|---|
 | `begin_turn` | — | Verifica el principal del thread contra el del proceso y resetea los contadores del turno |
-| `call_model` | LLM | Invoca el modelo y encola sus tool calls; aplica `max_model_turns` |
+| `call_model` | LLM | Verifica el contrato de tool calling del historial, invoca el modelo y encola sus tool calls; aplica `max_model_turns` |
 | `dispatch` | — | Descarta tool calls desconocidas o inválidas (`[invalid_tool_call]`), aplica `max_tool_calls` y elige la ruta |
 | `execute_read` | lectura MCP | Ejecuta `list_projects` / `get_project` sin aprobación |
 | `prepare_write` | lecturas MCP | Ubica la tarea, toma `version`, genera `action_id` + `idempotency_key` y sella la `PendingWrite` |

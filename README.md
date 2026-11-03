@@ -24,7 +24,7 @@ Python y LangGraph gestiona proyectos mediante tools MCP (`list_projects`, `get_
 | 1. Dominio | Modelos, política de autorización, SQLite, ProjectService, idempotencia y auditoría | ✅ |
 | 2. Servidor MCP | 3 tools sobre `MCPServer` (SDK v2), `.mcp.json` de solo lectura ([docs/mcp.md](docs/mcp.md)) | ✅ |
 | 3. Grafo | `StateGraph` con aprobación por `interrupt()` ([docs/agent.md](docs/agent.md)) | ✅ |
-| 4. Robustez | Idempotencia, conflictos de versión, crash/resume | pendiente |
+| 4. Robustez | Clasificación de fallos, reintentos acotados, `WRITE_UNCERTAIN`, historial consistente, lock por thread obligatorio, logs sin secretos, fault injection ([docs/reliability.md](docs/reliability.md)) | ✅ |
 | 5. CLI y observabilidad | `arl chat/pending/approve/trace` | pendiente |
 | 6. Evaluaciones | ~30 casos, suite determinística + conductual | pendiente |
 | 7. Documentación | Arquitectura, threat model, ADRs | pendiente |
@@ -42,6 +42,7 @@ uv run pytest                # todos los tests
 uv run ruff check .          # lint
 uv run ruff format --check . # formato
 uv run pytest --cov=arl --cov-branch  # cobertura
+uv run python scripts/mutation_check.py  # ¿los tests detectan las regresiones? (~8 min)
 ```
 
 ### Datos

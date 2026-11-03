@@ -47,7 +47,7 @@ async def test_agent_against_real_stdio_server_process(db_path: Path, tmp_path: 
     ):
         gateway = McpGateway(client, "alice")
         await gateway.verify_contract()
-        graph = build_graph(model, gateway, saver)
+        graph = build_graph(model, gateway, saver, lock_dir=tmp_path / "locks")
         paused = await run_turn(graph, thread_id="t-io", text="cerrá apo-3")
         assert paused.status is TurnStatus.AWAITING_APPROVAL
         done = await resume(graph, thread_id="t-io", decision=approve(paused.approval_request))

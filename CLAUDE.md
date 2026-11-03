@@ -6,7 +6,8 @@ Datos sintéticos. `--user` es una identidad simulada: no hay autenticación rea
 
 ## Estado y alcance
 
-- Etapa actual: 3 (agente LangGraph, ver `docs/agent.md`). No avanzar de etapa sin aprobación.
+- Etapa actual: 4 (tolerancia a fallos, ver `docs/reliability.md`). No avanzar sin aprobación.
+- Cambios en identidad, aprobación o fallos: correr `uv run python scripts/mutation_check.py`.
 - Fuera del MVP: RAG, multiagentes, frontend, despliegue cloud, LangSmith, OpenTelemetry.
 
 ## Dos mundos separados

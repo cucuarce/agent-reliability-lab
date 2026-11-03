@@ -11,6 +11,7 @@ from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.graph.state import CompiledStateGraph
 from mcp import Client
 
+from arl.agent.faults import FaultPlan, FaultyClient
 from arl.agent.gateway import McpGateway
 from arl.agent.graph import build_graph
 from arl.agent.scripted_model import ScriptedChatModel
@@ -71,14 +72,21 @@ def checkpoints_path(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
+def lock_dir(checkpoints_path: Path) -> Path:
+    """Locks por thread compartidos por todos los procesos del test (y los subprocesos)."""
+    return checkpoints_path.parent / "locks"
+
+
+@pytest.fixture
 def open_agent(
-    db_path: Path, checkpoints_path: Path
+    db_path: Path, checkpoints_path: Path, lock_dir: Path
 ) -> Callable[..., AbstractAsyncContextManager[AgentProcess]]:
     """Un "proceso" del agente: checkpointer SQLite + cliente MCP (en memoria) + grafo.
 
     Abrir y cerrar dos veces el contexto equivale a reiniciar el proceso: solo persisten los
-    archivos ``app.db`` y ``checkpoints.db``.
+    archivos ``app.db``, ``checkpoints.db`` y los locks.
     """
+    locks = lock_dir
 
     @asynccontextmanager
     async def factory(
@@ -91,6 +99,60 @@ def open_agent(
         ):
             gateway = McpGateway(client, user_id)
             await gateway.verify_contract()
-            yield build_graph(model, gateway, saver, limits), gateway
+            yield build_graph(model, gateway, saver, limits, lock_dir=locks), gateway
 
     return factory
+
+
+# Reintentos sin espera para que los tests de fallos sean rápidos y deterministas.
+FAST_RETRY = Limits(retry_initial_interval=0.0, retry_max_interval=0.0, retry_jitter=False)
+
+
+@pytest.fixture
+def open_faulty_agent(
+    db_path: Path, checkpoints_path: Path, lock_dir: Path
+) -> Callable[..., AbstractAsyncContextManager[tuple[CompiledStateGraph, FaultyClient]]]:
+    """Como ``open_agent``, pero con un ``FaultyClient`` entre el gateway y el servidor."""
+    locks = lock_dir
+
+    @asynccontextmanager
+    async def factory(
+        user_id: str,
+        model: ScriptedChatModel,
+        plan: FaultPlan | None = None,
+        limits: Limits = FAST_RETRY,
+    ) -> AsyncIterator[tuple[CompiledStateGraph, FaultyClient]]:
+        server = create_server(db_path, Principal(user_id=user_id))
+        async with (
+            AsyncSqliteSaver.from_conn_string(str(checkpoints_path)) as saver,
+            Client(server) as client,
+        ):
+            faulty = FaultyClient(client, plan or {})
+            gateway = McpGateway(faulty, user_id)  # type: ignore[arg-type]
+            yield build_graph(model, gateway, saver, limits, lock_dir=locks), faulty
+
+    return factory
+
+
+@pytest.fixture
+def invariants() -> Callable[[sqlite3.Connection, set[str]], None]:
+    return check_invariants
+
+
+def check_invariants(conn: sqlite3.Connection, approved_keys: set[str]) -> None:
+    """Invariantes de seguridad del dominio, verificables después de cualquier fallo.
+
+    - solo se escribieron acciones aprobadas, sin duplicados;
+    - cada auditoría tiene su entrada de ledger (escritura atómica);
+    - la versión de cada tarea es 1 + número de modificaciones auditadas.
+    """
+    rows = conn.execute("SELECT actor_id, idempotency_key, task_id FROM audit_log").fetchall()
+    audits = [tuple(row) for row in rows]
+    keys = [key for _, key, _ in audits]
+    assert len(keys) == len(set(keys)), "escritura duplicada"
+    assert set(keys) <= approved_keys, "escritura sin aprobación"
+    ledger = {tuple(r) for r in conn.execute("SELECT principal_id, key FROM idempotency_keys")}
+    assert {(actor, key) for actor, key, _ in audits} <= ledger, "auditoría sin ledger"
+    for task_id, version in conn.execute("SELECT id, version FROM tasks").fetchall():
+        modifications = sum(1 for _, _, audited in audits if audited == task_id)
+        assert version == 1 + modifications, f"versión inconsistente en {task_id}"

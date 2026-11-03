@@ -20,6 +20,7 @@ Ningún nodo decide permisos: la autorización es exclusiva del servidor MCP.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Protocol, cast
 
 from langchain_core.messages import AIMessage, BaseMessage, SystemMessage, ToolMessage
@@ -27,10 +28,12 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
-from langgraph.types import interrupt
+from langgraph.types import RetryPolicy, interrupt
 from pydantic import ValidationError
 
-from arl.agent.gateway import McpGateway, ToolResult
+from arl.agent.gateway import McpGateway, ToolCallFailed, ToolResult
+from arl.agent.history import check_tool_protocol
+from arl.agent.locks import LockingRequired
 from arl.agent.state import (
     AgentState,
     ApprovalDecision,
@@ -64,6 +67,12 @@ class ToolCallingModel(Protocol):
     def bind_tools(self, tools: list[dict[str, Any]], **kwargs: Any) -> Any: ...
 
 
+def is_retryable(exc: Exception) -> bool:
+    """Solo fallos transitorios del MCP. Los resultados de dominio (forbidden, version_conflict,
+    rechazo humano) no son excepciones y nunca se reintentan."""
+    return isinstance(exc, ToolCallFailed) and exc.retryable
+
+
 def _tool_message(tool_call_id: str, name: str, result: ToolResult) -> ToolMessage:
     if result.is_error:
         return ToolMessage(
@@ -83,7 +92,13 @@ def build_graph(
     gateway: McpGateway,
     checkpointer: BaseCheckpointSaver,
     limits: Limits | None = None,
+    *,
+    lock_dir: Path,
 ) -> CompiledStateGraph:
+    """``lock_dir``: directorio de locks por thread (ver ``arl.agent.locks``). Obligatorio: sin él,
+    dos procesos podrían ejecutar el mismo thread a la vez sobre el mismo checkpointer."""
+    if lock_dir is None:
+        raise LockingRequired("build_graph requiere lock_dir (lock por thread entre procesos)")
     limits = limits or Limits()
     llm = model.bind_tools(tool_definitions())
 
@@ -167,6 +182,8 @@ def build_graph(
     async def call_model(state: AgentState) -> dict[str, Any]:
         if state["model_turns"] >= limits.max_model_turns:
             return {"messages": [AIMessage(TURN_LIMIT_REPLY)], "queue": [], "status": "turn_limit"}
+        # Última barrera: un proveedor real rechaza tool calls sin respuesta; nunca se le envían.
+        check_tool_protocol(state["messages"])
         response = await llm.ainvoke([SystemMessage(SYSTEM_PROMPT), *state["messages"]])
         queue = [
             {"id": call["id"], "name": call["name"], "args": call["args"]}
@@ -258,18 +275,21 @@ def build_graph(
             return "await_approval"  # decisión inválida: se vuelve a pedir
         return "execute_write" if state["approval"]["decision"] == "approve" else "record_rejection"
 
+    # Solo los nodos que hablan con el MCP se reintentan, y solo ante fallos transitorios.
+    # execute_write reintenta con la misma PendingWrite (misma clave): el servidor deduplica.
+    mcp_retry = RetryPolicy(
+        max_attempts=limits.max_attempts,
+        initial_interval=limits.retry_initial_interval,
+        backoff_factor=2.0,
+        max_interval=limits.retry_max_interval,
+        jitter=limits.retry_jitter,
+        retry_on=is_retryable,
+    )
     builder = StateGraph(AgentState)
-    for node in (
-        begin_turn,
-        call_model,
-        dispatch,
-        execute_read,
-        prepare_write,
-        await_approval,
-        execute_write,
-        record_rejection,
-    ):
+    for node in (begin_turn, call_model, dispatch, await_approval, record_rejection):
         builder.add_node(node.__name__, node)
+    for node in (execute_read, prepare_write, execute_write):
+        builder.add_node(node.__name__, node, retry_policy=mcp_retry)
     builder.add_edge(START, "begin_turn")
     builder.add_edge("begin_turn", "call_model")
     builder.add_conditional_edges("call_model", after_model, ["dispatch", END])
@@ -287,7 +307,10 @@ def build_graph(
     return builder.compile(checkpointer=checkpointer).with_config(
         {
             "recursion_limit": limits.recursion_limit,
-            "configurable": {"principal_id": gateway.principal_id},
+            "configurable": {
+                "principal_id": gateway.principal_id,
+                "lock_dir": str(lock_dir),
+            },
         }
     )
 
@@ -299,7 +322,7 @@ async def _locate_task(gateway: McpGateway, task_id: str) -> tuple[str, str, dic
         return None
     for project in listing.data["result"]:
         detail = await gateway.call("get_project", {"project_id": project["id"]})
-        if detail.is_error or detail.data is None:
+        if detail.is_error or detail.data is None:  # p. ej. acceso revocado entre lecturas
             continue
         for task in detail.data["tasks"]:
             if task["id"] == task_id:
