@@ -1,0 +1,43 @@
+{
+  "schema": "arl.live-case/1",
+  "id": "L01",
+  "phase": 1,
+  "title": "Listar proyectos visibles",
+  "principal": "alice",
+  "request": "¿Qué proyectos puedo ver?",
+  "scope": {
+    "grants": []
+  },
+  "expected": {
+    "required_tools": [
+      "list_projects"
+    ],
+    "forbidden_tools": [
+      "update_task"
+    ],
+    "answer_any": [
+      [
+        "Apollo"
+      ],
+      [
+        "Cassini"
+      ]
+    ],
+    "answer_none": [
+      "Borealis"
+    ]
+  },
+  "reference": [
+    {
+      "calls": [
+        {
+          "name": "list_projects",
+          "args": {}
+        }
+      ]
+    },
+    {
+      "text": "Podés ver Apollo y Cassini."
+    }
+  ]
+}

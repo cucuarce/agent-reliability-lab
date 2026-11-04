@@ -6,9 +6,13 @@ Datos sintéticos. `--user` es una identidad simulada: no hay autenticación rea
 
 ## Estado y alcance
 
-- Etapa actual: 6A.1 (alcance del turno, ver `docs/scope.md`; evaluación en `docs/evals.md`).
-  `run_turn` exige `scope=`; `unrestricted_legacy_v1` es solo para la suite v1. No avanzar a 6B sin
-  aprobación. Suite: `uv run python -m arl.evals` (modelo y humano simulados).
+- Etapa actual: 6B.1 (Groq, ver `docs/live-evals.md`). `uv run python -m arl.evals.live dry-run`
+  no hace inferencia. **Ninguna llamada real (`run`, `models`) sin autorización explícita del
+  usuario**; escrituras con modelo real deshabilitadas. Sin Ollama todavía.
+- `GROQ_API_KEY` sale del entorno o del `.env` local (nunca se lee ni se muestra). El servidor
+  MCP nunca la recibe; los tests nunca leen el `.env` real.
+- `run_turn` exige `scope=` (`docs/scope.md`); `unrestricted_legacy_v1` es solo para la suite v1.
+  Suites determinísticas: `uv run python -m arl.evals` (modelo y humano simulados).
 - Cambios en identidad, aprobación, fallos o trazas: correr
   `uv run python scripts/mutation_check.py`.
 - Analizar una ejecución: `/analyze-run <run_id>` (Skill de solo lectura).

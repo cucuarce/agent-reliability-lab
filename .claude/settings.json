@@ -16,7 +16,8 @@
     ],
     "deny": [
       "Read(**/.env)",
-      "Edit(**/.env)"
+      "Edit(**/.env)",
+      "Write(**/.env)"
     ]
   },
   "hooks": {

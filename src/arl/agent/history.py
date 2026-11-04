@@ -11,6 +11,10 @@ que detiene la ejecución deja tool calls sin respuesta; esta política decide q
   misma clave de idempotencia.
 
 ``check_tool_protocol`` es la última barrera: ``call_model`` la ejecuta antes de invocar al LLM.
+
+**La identidad de cada tool call la fija el agente, no el proveedor** (``normalize_response``).
+Un proveedor real puede repetir ids de tool call o de mensaje; el ``action_id`` y la clave de
+idempotencia se derivan del id, y ``add_messages`` reemplaza un mensaje con el mismo id.
 """
 
 from __future__ import annotations
@@ -68,3 +72,34 @@ def check_tool_protocol(messages: Sequence[BaseMessage]) -> None:
             pending = [call["id"] for call in message.tool_calls]
     if pending:
         raise HistoryInconsistent(f"{len(pending)} tool call(s) sin respuesta")
+
+
+def normalize_response(response: AIMessage, history: Sequence[BaseMessage]) -> AIMessage:
+    """La respuesta del LLM con la identidad que fija el agente, antes de guardarla.
+
+    - Cada tool call recibe ``call_<mensajes del asistente previos>_<índice>``: único en el
+      thread (el historial solo crece) y estable en checkpoints, reanudaciones y recuperaciones,
+      porque se guarda ya normalizado. Es el mismo esquema que usa el modelo simulado.
+    - El mensaje no conserva el id del proveedor: ``add_messages`` le asigna uno nuevo, así que
+      nunca reemplaza un mensaje anterior.
+    - No se guardan las copias del proveedor (``additional_kwargs``, con sus ids originales) ni las
+      ``invalid_tool_calls``: no tienen respuesta y romperían el contrato con el proveedor. Las
+      cuenta la evaluación, que ve la respuesta original.
+    """
+    turn = sum(isinstance(m, AIMessage) for m in history)
+    content = response.content
+    if not isinstance(content, str):  # bloques: solo el texto (sin tool_use ni razonamiento)
+        content = "".join(
+            b if isinstance(b, str) else str(b.get("text", ""))
+            for b in content
+            if isinstance(b, str) or b.get("type") == "text"
+        )
+    return AIMessage(
+        content=content,
+        tool_calls=[
+            {"id": f"call_{turn}_{i}", "name": c["name"], "args": c["args"], "type": "tool_call"}
+            for i, c in enumerate(response.tool_calls)
+        ],
+        response_metadata=dict(response.response_metadata),
+        usage_metadata=response.usage_metadata,
+    )

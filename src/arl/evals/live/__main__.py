@@ -1,0 +1,224 @@
+"""``python -m arl.evals.live``: evaluación conductual con un LLM real (etapa 6B.1, solo Groq).
+
+    python -m arl.evals.live config [--profile P]        # configuración y credencial (sí/no)
+    python -m arl.evals.live dry-run [--only ID ...]     # sin inferencia y sin red
+    python -m arl.evals.live models                      # GET /models (no hace inferencia)
+    python -m arl.evals.live run --profile first-batch --only L01 L02 --confirm-real-calls
+
+``run`` hace inferencia real. Exige ``--confirm-real-calls``, ``--only`` y un perfil que autorice
+esos escenarios (``first-batch``: L01 y L02), no admite cambiar las repeticiones del perfil y
+solo acepta escenarios de fase 1 (solo lectura).
+
+La credencial sale de ``GROQ_API_KEY``: del entorno o, si no está definida ahí, del ``.env`` del
+directorio actual. Nunca se imprime ni se guarda.
+
+Exit: 0 si todas las corridas pasan; 1 si alguna falla o no es evaluable; 2 ante un error de
+uso, configuración o credencial.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+from pathlib import Path
+from typing import Any
+
+import anyio
+
+from arl.config import ConfigError
+from arl.evals.live.cases import InvalidLiveCase, load_live_cases
+from arl.evals.live.providers import (
+    API_KEY_ENV,
+    DEFAULT_MODEL,
+    CredentialSource,
+    MissingCredential,
+    ProviderError,
+    credential_present,
+    list_models,
+    load_env_file,
+)
+from arl.evals.live.suite import PROFILES, LiveConfig, run_live_suite
+from arl.tracing.logging_setup import LOG_LEVEL_ENV, configure_logging
+
+ALTERNATIVE_MODEL = "openai/gpt-oss-120b"
+ENV_FILE = Path(".env")  # relativo al directorio actual: la raíz del repo
+_SOURCES = {"environment": "entorno", "env_file": ".env", None: None}
+
+
+def _rate(m: dict[str, Any]) -> str:
+    rate = "n/a" if m["rate"] is None else f"{m['rate'] * 100:.1f} %"
+    return f"{m['numerator']}/{m['denominator']} ({rate})"
+
+
+def render(report: dict[str, Any]) -> str:
+    meta, m = report["metadata"], report["metrics"]
+    lines = [
+        f"# Evaluación con LLM real — {meta['mode']} ({meta['provider']}: {meta['model']})",
+        f"suite {meta['suite_version']} · casos {meta['case_schema']} · commit "
+        f"{meta['commit'][:8]}{' (con cambios)' if meta['dirty'] else ''}"
+        + (f" · detenida: {meta['stopped']}" if meta["stopped"] else ""),
+        "",
+        "| escenario | rep | fase | veredicto | clase | causa | llamadas | tokens (peor caso) |",
+        "|---|---|---|---|---|---|---|---|",
+    ]
+    for r in report["results"]:
+        usage = r.get("scenario_usage") or {}
+        lines.append(
+            f"| {r['case_id']} | {r['repetition']} | {r['phase']} | {r['verdict']} | "
+            f"{r['error_class'] or ''} | {r.get('cause') or ''} | {usage.get('calls', '')} | "
+            f"{usage.get('tokens_charged', '')} |"
+        )
+    lines.append("")
+    for group in ("functional", "safety", "attacks", "format", "provider", "usage"):
+        for name, value in m[group].items():
+            shown = _rate(value) if isinstance(value, dict) and "rate" in value else value
+            lines.append(f"- {group}.{name}: {shown}")
+    return "\n".join(lines)
+
+
+def write_report(report: dict[str, Any], out_dir: Path) -> Path:
+    meta = report["metadata"]
+    stamp = meta["started_at"].replace(":", "").replace("-", "").replace("+0000", "Z")
+    target = out_dir / f"{stamp}-{meta['mode']}-{meta['commit'][:8]}"
+    n = 1
+    while target.exists():
+        n += 1
+        target = target.with_name(f"{target.name.split('~')[0]}~{n}")
+    target.mkdir(parents=True)
+    (target / "report.json").write_text(
+        json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    (target / "summary.md").write_text(render(report), encoding="utf-8")
+    return target
+
+
+def _config(args: argparse.Namespace) -> LiveConfig:
+    base = PROFILES[args.profile]
+    update: dict[str, Any] = {"spec": base.spec.model_copy(update={"model": args.model})}
+    if args.repeat is not None:
+        update["repeat"] = args.repeat
+    return LiveConfig.model_validate(base.model_dump() | update)
+
+
+def _show_config(config: LiveConfig, source: CredentialSource | None) -> None:
+    print(
+        json.dumps(
+            {
+                "config": config.model_dump(mode="json"),
+                "credential": {
+                    API_KEY_ENV: "definida" if credential_present() else "no definida",
+                    "origen": _SOURCES[source],
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="python -m arl.evals.live",
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    sub = parser.add_subparsers(dest="command", required=True)
+    for name in ("config", "dry-run", "run"):
+        p = sub.add_parser(name)
+        p.add_argument("--cases", type=Path, default=Path("evals/live/cases"))
+        p.add_argument("--out", type=Path, default=Path("evals/live-reports"))
+        p.add_argument("--only", nargs="+")
+        p.add_argument("--profile", choices=sorted(PROFILES), default="default")
+        p.add_argument("--repeat", type=int)  # por defecto, el del perfil
+        p.add_argument("--model", default=DEFAULT_MODEL)
+        p.add_argument("--no-write", action="store_true")
+        if name == "run":
+            p.add_argument("--confirm-real-calls", action="store_true")
+    sub.add_parser("models")
+    args = parser.parse_args(argv)
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8")
+    configure_logging(os.environ.get(LOG_LEVEL_ENV, "ERROR"))
+    try:
+        source = load_env_file(ENV_FILE)  # antes de cualquier ChatGroq o GET /models
+    except MissingCredential as exc:
+        print(f"arl.evals.live: {exc}", file=sys.stderr)
+        return 2
+
+    if args.command == "models":
+        return _models()
+    config = _config(args)
+    if args.command == "config":
+        _show_config(config, source)
+        return 0
+    try:
+        cases = load_live_cases(args.cases)
+        if args.only:
+            unknown = set(args.only) - {c.case.id for c in cases}
+            if unknown:
+                raise InvalidLiveCase(f"escenarios inexistentes: {sorted(unknown)}")
+            cases = [c for c in cases if c.case.id in args.only]
+        if args.command == "run":
+            _check_real_run(args, cases, config)
+        mode = "live" if args.command == "run" else "dry-run"
+        report = anyio.run(lambda: run_live_suite(cases, Path.cwd(), config, mode=mode))
+    except (InvalidLiveCase, ConfigError, MissingCredential, UsageError) as exc:
+        print(f"arl.evals.live: {exc}", file=sys.stderr)
+        return 2
+    print(render(report))
+    if not args.no_write:
+        print(f"reporte: {write_report(report, args.out)}")
+    runs = report["metrics"]["runs"]
+    return 0 if runs["passed"] == runs["total"] else 1
+
+
+class UsageError(ValueError):
+    pass
+
+
+def _check_real_run(args: argparse.Namespace, cases, config: LiveConfig) -> None:
+    if not args.only:
+        raise UsageError("run exige --only con los escenarios autorizados")
+    if not args.confirm_real_calls:
+        raise UsageError("run hace inferencia real: agregá --confirm-real-calls")
+    writes = [c.case.id for c in cases if c.case.phase != 1]
+    if writes:
+        raise UsageError(f"escrituras deshabilitadas con un modelo real: {writes}")
+    if config.allowed_cases is None:
+        raise UsageError(f"el perfil {args.profile!r} no autoriza inferencia real")
+    unauthorized = sorted(set(args.only) - set(config.allowed_cases))
+    if unauthorized:
+        raise UsageError(f"el perfil {args.profile!r} no autoriza {unauthorized}")
+    if config.repeat != PROFILES[args.profile].repeat:
+        raise UsageError("run no admite cambiar las repeticiones del perfil")
+    if not credential_present():
+        raise MissingCredential(f"{API_KEY_ENV} no está definida en el entorno")
+
+
+def _models() -> int:
+    try:
+        models = list_models()
+    except MissingCredential as exc:
+        print(f"arl.evals.live: {exc}", file=sys.stderr)
+        return 2
+    except ProviderError as exc:
+        print(f"arl.evals.live: {exc} (HTTP {exc.failure.status})", file=sys.stderr)
+        return 2
+    ids = {m["id"]: m for m in models}
+    for wanted in (DEFAULT_MODEL, ALTERNATIVE_MODEL):
+        info = ids.get(wanted)
+        state = (
+            "no disponible"
+            if info is None
+            else (f"disponible (active={info['active']}, context_window={info['context_window']})")
+        )
+        print(f"{wanted}: {state}")
+    print(f"{len(models)} modelos en la cuenta: " + ", ".join(sorted(ids)))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

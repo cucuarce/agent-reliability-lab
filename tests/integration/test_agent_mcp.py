@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import pytest
 from langchain_core.messages import ToolMessage
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
-from mcp import Client
+from mcp import Client, StdioServerParameters
 from mcp.server import MCPServer
 
 from arl.agent.gateway import ContractMismatch, McpGateway, stdio_server_parameters
@@ -34,6 +35,33 @@ async def test_gateway_rejects_a_server_with_a_different_contract() -> None:
     async with Client(impostor) as client:
         with pytest.raises(ContractMismatch):
             await McpGateway(client, "alice").verify_contract()
+
+
+async def test_stdio_server_process_never_receives_llm_provider_credentials(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """La clave de Groq es del cliente del modelo: el proceso del servidor MCP no la recibe.
+    Se lanza un proceso real con el entorno que prepara ``stdio_server_parameters`` (el SDK le
+    suma ``get_default_environment``) y se pregunta si cada variable existe."""
+    canary = "gsk_canary_" + "m" * 40
+    monkeypatch.setenv("GROQ_API_KEY", canary)
+    monkeypatch.setenv("OPENAI_API_KEY", canary)
+    params = stdio_server_parameters("alice", data_dir=tmp_path)
+    assert canary not in json.dumps(params.env)
+    probe = StdioServerParameters(
+        command=sys.executable,
+        args=[str(Path(__file__).with_name("env_probe_mcp_server.py"))],
+        env=params.env,
+    )
+    async with Client(probe) as client:
+
+        async def has(name: str) -> bool:
+            result = await client.call_tool("env_has", {"name": name})
+            return result.structured_content == {"result": True}
+
+        assert await has("ARL_PRINCIPAL")  # control: el entorno preparado sí llega
+        assert not await has("GROQ_API_KEY")
+        assert not await has("OPENAI_API_KEY")
 
 
 async def test_agent_against_real_stdio_server_process(db_path: Path, tmp_path: Path, conn) -> None:

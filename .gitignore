@@ -16,6 +16,8 @@ htmlcov/
 .env
 .env.*
 !.env.example
+*.pem
+*.key
 
 # Datos locales (SQLite del dominio y checkpoints)
 var/
@@ -30,3 +32,6 @@ evals/reports/
 # Configuración personal de Claude Code (no compartida)
 .claude/settings.local.json
 CLAUDE.local.md
+
+# Reportes de la evaluación con LLM real (etapa 6B)
+evals/live-reports/

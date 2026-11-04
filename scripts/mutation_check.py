@@ -54,10 +54,29 @@ TESTS = [
     "tests/unit/test_request_scope.py",
     "tests/integration/test_agent_scope.py",
     "tests/integration/test_evals_scope.py",
+    "tests/unit/test_tool_call_normalization.py",
+    "tests/integration/test_agent_tool_call_ids.py",
+    "tests/unit/test_live_provider.py",
+    "tests/unit/test_live_model.py",
+    "tests/unit/test_live_env_file.py",
+    "tests/integration/test_live_suite.py",
 ]
-COPY_IGNORE = shutil.ignore_patterns(
+_COPY_IGNORE_PATTERNS = shutil.ignore_patterns(
     ".git", ".venv", "__pycache__", ".pytest_cache", ".ruff_cache", "var", "*.db", "htmlcov"
 )
+
+
+def COPY_IGNORE(directory: str, names: list[str]) -> set[str]:
+    """Además, los secretos nunca se copian al directorio temporal (sí ``.env.example``)."""
+    secrets = {
+        n
+        for n in names
+        if n == ".env"
+        or (n.startswith(".env.") and n != ".env.example")
+        or n.endswith((".pem", ".key"))
+    }
+    return set(_COPY_IGNORE_PATTERNS(directory, names)) | secrets
+
 
 RUNTIME = "src/arl/agent/runtime.py"
 GRAPH = "src/arl/agent/graph.py"
@@ -70,6 +89,13 @@ EVAL_GRADERS = "src/arl/evals/graders.py"
 EVAL_METRICS = "src/arl/evals/metrics.py"
 EVAL_RUNNER = "src/arl/evals/runner.py"
 SCOPE = "src/arl/agent/scope.py"
+HISTORY = "src/arl/agent/history.py"
+LIVE_MODEL = "src/arl/evals/live/model.py"
+LIVE_PROVIDERS = "src/arl/evals/live/providers.py"
+LIVE_RUNNER = "src/arl/evals/live/runner.py"
+LIVE_GRADERS = "src/arl/evals/live/graders.py"
+LIVE_SUITE = "src/arl/evals/live/suite.py"
+LIVE_CLI = "src/arl/evals/live/__main__.py"
 RECORDER = "src/arl/tracing/recorder.py"
 QUERY = "src/arl/tracing/query.py"
 LOGGING = "src/arl/tracing/logging_setup.py"
@@ -260,6 +286,56 @@ MUTANTS = [
            "        if False:"),
     Mutant("evals: la medición 'antes' corre con la defensa", EVAL_RUNNER,
            "    if case.scope is not None and enforce:", "    if case.scope is not None:"),
+    # --- Identidad de las tool calls con proveedores reales (etapa 6B.1, R1) ---
+    Mutant("R1: call_model usa los ids del proveedor", GRAPH,
+           '        response = normalize_response(response, state["messages"])', "        pass"),
+    Mutant("R1: el id depende solo del índice (se repite entre turnos)", HISTORY,
+           '{"id": f"call_{turn}_{i}", "name"', '{"id": f"call_0_{i}", "name"'),
+    # --- Evaluación con LLM real (etapa 6B.1) ---
+    Mutant("live: no se verifica el presupuesto antes de llamar", LIVE_MODEL,
+           "            if reason := meter.refusal(worst, self.limits.call_timeout_s):",
+           "            if reason := None:"),
+    Mutant("live: los intentos no cuentan como llamadas", LIVE_MODEL,
+           "            meter.calls += 1", "            pass"),
+    Mutant("live: se reintenta antes de lo que pide Retry-After", LIVE_MODEL,
+           "        if wait > self.limits.max_retry_wait_s:", "        if False:"),
+    Mutant("live: se reintentan errores no transitorios", LIVE_MODEL,
+           "        if not failure.retryable or attempt >= self.limits.max_retries:",
+           "        if attempt >= self.limits.max_retries:"),
+    Mutant("live: una cota de tokens incorrecta no detiene la suite", LIVE_MODEL,
+           '                self._break("prompt_estimate_exceeded")', "                pass"),
+    Mutant("live: tool_use_failed se cuenta como error del proveedor", LIVE_PROVIDERS,
+           '        return "model" if self.code == "tool_use_failed" else "provider"',
+           '        return "provider"'),
+    Mutant("live: un 401 no detiene la suite", LIVE_PROVIDERS,
+           '_ABORTS_SUITE = frozenset({"auth", "forbidden", "not_found"})',
+           '_ABORTS_SUITE = frozenset({"forbidden", "not_found"})'),
+    Mutant("live: el .env sobrescribe la credencial del entorno", LIVE_PROVIDERS,
+           "    if API_KEY_ENV in environ:", "    if False:"),
+    Mutant("live: del .env se toman todas las variables", LIVE_PROVIDERS,
+           "    value = dotenv_values(path, interpolate=False).get(API_KEY_ENV)",
+           "    values = dotenv_values(path, interpolate=False)\n"
+           "    environ.update({k: v for k, v in values.items() if v is not None})\n"
+           "    value = values.get(API_KEY_ENV)"),
+    Mutant("live: una cuota agotada no detiene la suite", LIVE_PROVIDERS,
+           "        return self.code in _ABORTS_SUITE or self.code in _QUOTA_EXHAUSTED",
+           "        return self.code in _ABORTS_SUITE"),
+    Mutant("live: run acepta escenarios que el perfil no autoriza", LIVE_CLI,
+           "    unauthorized = sorted(set(args.only) - set(config.allowed_cases))",
+           "    unauthorized = []"),
+    Mutant("live: el servidor MCP recibe la clave del proveedor", GATEWAY,
+           "        **_without_credentials(os.environ),", "        **os.environ,"),
+    Mutant("live: un modelo real puede correr escenarios de escritura", LIVE_RUNNER,
+           "    if real_model and not case.writes_allowed_with_real_model and case.phase != 1:",
+           "    if False:"),
+    Mutant("live: la CLI acepta escenarios de escritura", LIVE_CLI,
+           "    writes = [c.case.id for c in cases if c.case.phase != 1]", "    writes = []"),
+    Mutant("live: un escenario empieza sin presupuesto completo", LIVE_SUITE,
+           "if remaining is None or not remaining.covers(config.scenario_budget):",
+           "if remaining is None:"),
+    Mutant("live: el intento de ataque se cuenta como ejecución", LIVE_GRADERS,
+           '        "executed": any(matches(a["task_id"], a["changes"]) for a in _own_audit(obs)),',
+           '        "executed": bool(attempts),'),
     # --- Evaluador (etapa 6A): un grader roto no puede pasar desapercibido ---
     Mutant("evals: approved_only nunca falla", EVAL_GRADERS,
            '            all(a["idempotency_key"] in approved for a in own),', "            True,"),

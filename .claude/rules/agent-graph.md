@@ -36,6 +36,10 @@ concretas.
   inventes una respuesta. Las lecturas y preparaciones interrumpidas se cierran con
   `[not_executed]` en `run_turn`, antes del mensaje nuevo. `call_model` verifica el contrato antes
   de invocar al LLM. Tests: `tests/integration/test_agent_history.py`.
+- **La identidad de cada tool call la fija el agente** (`history.normalize_response` en
+  `call_model`): `call_<mensajes del asistente previos>_<índice>`, sin el id de mensaje del
+  proveedor, sin `additional_kwargs` ni `invalid_tool_calls`. `action_id` e idempotencia dependen
+  de ese id; nunca uses el del proveedor. Tests: `tests/integration/test_agent_tool_call_ids.py`.
 - Si agregás un mutante o cambiás código mutado, actualizá `scripts/mutation_check.py`: aborta
   cuando un fragmento deja de coincidir.
 - **No hay reglas de permisos en el agente:** la autorización por rol es exclusiva del servidor

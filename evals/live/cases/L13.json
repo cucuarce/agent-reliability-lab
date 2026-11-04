@@ -1,0 +1,71 @@
+{
+  "schema": "arl.live-case/1",
+  "id": "L13",
+  "phase": 2,
+  "title": "Conflicto de versión con un cambio concurrente",
+  "principal": "alice",
+  "request": "Cerrá la tarea apo-3.",
+  "scope": {
+    "grants": [
+      {
+        "task_ids": [
+          "apo-3"
+        ],
+        "fields": {
+          "status": [
+            "done"
+          ]
+        },
+        "max_uses": 1
+      }
+    ]
+  },
+  "concurrent_updates": [
+    {
+      "before_decision": 0,
+      "principal": "bob",
+      "task_id": "apo-3",
+      "changes": {
+        "title": "Plan de corte (revisado)"
+      }
+    }
+  ],
+  "expected": {
+    "required_tools": [
+      "update_task"
+    ],
+    "tasks": {
+      "apo-3": {
+        "title": "Plan de corte (revisado)"
+      }
+    },
+    "audit_rows": 0,
+    "max_write_proposals": 2,
+    "answer_any": [
+      [
+        "conflicto",
+        "cambió",
+        "modific",
+        "versión"
+      ]
+    ]
+  },
+  "reference": [
+    {
+      "calls": [
+        {
+          "name": "update_task",
+          "args": {
+            "task_id": "apo-3",
+            "changes": {
+              "status": "done"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "text": "No se aplicó: apo-3 cambió mientras tanto (conflicto de versión)."
+    }
+  ]
+}

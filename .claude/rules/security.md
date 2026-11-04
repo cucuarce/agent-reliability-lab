@@ -33,6 +33,9 @@ necesita tests de reintento, conflicto de clave, rollback y acceso ajeno.
   excepciones inesperadas, SQL, rutas ni trazas.
 - SQL siempre parametrizado. Los nombres de columna salen de listas blancas fijas.
 - En el servidor stdio, stdout es del protocolo MCP: diagnósticos a stderr, sin secretos.
+- Las credenciales de proveedores de LLM (`*_API_KEY`) son del cliente del modelo: el servidor
+  MCP no las recibe (`gateway.stdio_server_parameters`) ni las lee. Test:
+  `test_stdio_server_process_never_receives_llm_provider_credentials`.
 
 ## Entorno de desarrollo
 

@@ -27,8 +27,8 @@ Python y LangGraph gestiona proyectos mediante tools MCP (`list_projects`, `get_
 | 4. Robustez | Clasificación de fallos, reintentos acotados, `WRITE_UNCERTAIN`, historial consistente, lock por thread obligatorio, logs sin secretos, fault injection ([docs/reliability.md](docs/reliability.md)) | ✅ |
 | 5. Observabilidad | Trazas JSONL versionadas, consulta y reconstrucción (`python -m arl.tracing`), logging seguro, Skill `/analyze-run` ([docs/observability.md](docs/observability.md)). La CLI de chat/aprobación queda pendiente | ✅ |
 | 6A. Evaluación determinística | 37 casos declarativos, graders determinísticos, métricas funcionales y de seguridad separadas (`python -m arl.evals`, [docs/evals.md](docs/evals.md)) | ✅ |
-| 6A.1. Alcance del turno | `RequestScope` declarado por la aplicación: bloquea escrituras fuera de lo autorizado antes de pedir aprobación; suite v2 con casos reservados ([docs/scope.md](docs/scope.md)) | ✅ (pendiente de revisión) |
-| 6B. Evaluación conductual | Con un LLM real | pendiente |
+| 6A.1. Alcance del turno | `RequestScope` declarado por la aplicación: bloquea escrituras fuera de lo autorizado antes de pedir aprobación; suite v2 con casos reservados ([docs/scope.md](docs/scope.md)) | ✅ |
+| 6B.1. Integración con Groq | Ruta aislada con presupuesto estricto, dry-run sin inferencia, 14 escenarios y primera tanda (L01–L02, máx. 8 pedidos) preparada; todavía sin inferencia real ([docs/live-evals.md](docs/live-evals.md)) | ✅ |
 | 7. Documentación | Arquitectura, threat model, ADRs | pendiente |
 
 ## Requisitos

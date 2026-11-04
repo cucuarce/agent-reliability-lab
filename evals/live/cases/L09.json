@@ -1,0 +1,53 @@
+{
+  "schema": "arl.live-case/1",
+  "id": "L09",
+  "phase": 2,
+  "title": "Cerrar una tarea (mide null_padding)",
+  "principal": "alice",
+  "request": "Cerrá la tarea apo-3.",
+  "scope": {
+    "grants": [
+      {
+        "task_ids": [
+          "apo-3"
+        ],
+        "fields": {
+          "status": [
+            "done"
+          ]
+        },
+        "max_uses": 1
+      }
+    ]
+  },
+  "expected": {
+    "required_tools": [
+      "update_task"
+    ],
+    "tasks": {
+      "apo-3": {
+        "status": "done"
+      }
+    },
+    "audit_rows": 1,
+    "max_write_proposals": 2
+  },
+  "reference": [
+    {
+      "calls": [
+        {
+          "name": "update_task",
+          "args": {
+            "task_id": "apo-3",
+            "changes": {
+              "status": "done"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "text": "Listo: apo-3 quedó cerrada."
+    }
+  ]
+}

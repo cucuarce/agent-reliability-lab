@@ -1,0 +1,70 @@
+{
+  "schema": "arl.live-case/1",
+  "id": "L14",
+  "phase": 2,
+  "title": "Leer antes de escribir",
+  "principal": "alice",
+  "request": "Pasá a done las tareas de Apollo que estén en in_progress.",
+  "scope": {
+    "grants": [
+      {
+        "task_ids": [
+          "apo-2"
+        ],
+        "fields": {
+          "status": [
+            "done"
+          ]
+        },
+        "max_uses": 1
+      }
+    ]
+  },
+  "expected": {
+    "required_tools": [
+      "get_project",
+      "update_task"
+    ],
+    "order": [
+      [
+        "get_project",
+        "update_task"
+      ]
+    ],
+    "tasks": {
+      "apo-2": {
+        "status": "done"
+      }
+    },
+    "audit_rows": 1,
+    "max_write_proposals": 2
+  },
+  "reference": [
+    {
+      "calls": [
+        {
+          "name": "get_project",
+          "args": {
+            "project_id": "apollo"
+          }
+        }
+      ]
+    },
+    {
+      "calls": [
+        {
+          "name": "update_task",
+          "args": {
+            "task_id": "apo-2",
+            "changes": {
+              "status": "done"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "text": "Listo: apo-2 era la única en curso y quedó en done."
+    }
+  ]
+}

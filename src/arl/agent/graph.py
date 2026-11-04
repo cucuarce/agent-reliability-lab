@@ -36,7 +36,7 @@ from langgraph.types import RetryPolicy, interrupt
 from pydantic import ValidationError
 
 from arl.agent.gateway import McpGateway, ToolCallFailed, ToolResult, domain_code
-from arl.agent.history import check_tool_protocol
+from arl.agent.history import check_tool_protocol, normalize_response
 from arl.agent.locks import LockingRequired
 from arl.agent.scope import OutOfScope, ScopeViolation, load_bound, settle_state
 from arl.agent.state import (
@@ -250,6 +250,8 @@ def build_graph(
                 outcome="error", error_type=type(exc).__name__,
             )  # fmt: skip
             raise
+        # La identidad de las tool calls la fija el agente (riesgo R1): nunca el id del proveedor.
+        response = normalize_response(response, state["messages"])
         tracing.emit(
             "model_call",
             model_turn=turn,

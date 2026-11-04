@@ -6,6 +6,7 @@ las cambia, estos tests fallan antes que el código de producto.
 
 from __future__ import annotations
 
+import os
 import sqlite3
 from importlib.metadata import version
 from typing import TypedDict
@@ -44,6 +45,19 @@ async def test_mcp_v2_in_memory_roundtrip() -> None:
         result = await client.call_tool("echo", {"text": "hola"})
         assert result.is_error is False
         assert result.structured_content == {"result": "hola"}
+
+
+def test_dotenv_values_reads_without_touching_the_environment(tmp_path, monkeypatch) -> None:
+    """``load_env_file`` depende de esto: ``dotenv_values`` no modifica ``os.environ`` y, con
+    ``interpolate=False``, no expande ``${...}``."""
+    from dotenv import dotenv_values
+
+    monkeypatch.delenv("ARL_CONTRACT_VAR", raising=False)
+    path = tmp_path / "contract.env"
+    path.write_text('ARL_CONTRACT_VAR="${HOME}x"\nVACIA=\n', encoding="utf-8")
+    assert dotenv_values(path, interpolate=False) == {"ARL_CONTRACT_VAR": "${HOME}x", "VACIA": ""}
+    assert "ARL_CONTRACT_VAR" not in os.environ
+    assert _major("python-dotenv") == 1
 
 
 class _State(TypedDict):

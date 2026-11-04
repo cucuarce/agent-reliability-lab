@@ -31,7 +31,7 @@ def test_settings_permissions_are_minimal(settings: dict) -> None:
     assert "defaultMode" not in permissions
     for rule in permissions["allow"]:
         assert rule.startswith(ALLOWED_PERMISSION_PREFIXES), f"permiso no previsto: {rule}"
-    assert {"Read(**/.env)", "Edit(**/.env)"} <= set(permissions["deny"])
+    assert {"Read(**/.env)", "Edit(**/.env)", "Write(**/.env)"} <= set(permissions["deny"])
 
 
 def test_hook_scripts_exist_and_cover_required_tools(settings: dict, repo_root: Path) -> None:

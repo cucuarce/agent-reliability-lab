@@ -26,6 +26,7 @@ import os
 import re
 import sys
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -230,12 +231,23 @@ def _classify_mcp_error(name: str, code: int) -> ToolCallFailed:
     return ToolResponseInvalid(name, f"error de protocolo MCP {code}", error_type="MCPError")
 
 
+CREDENTIAL_ENV_SUFFIX = "_API_KEY"
+
+
+def _without_credentials(environ: Mapping[str, str]) -> dict[str, str]:
+    return {k: v for k, v in environ.items() if not k.upper().endswith(CREDENTIAL_ENV_SUFFIX)}
+
+
 def stdio_server_parameters(
     principal_id: str, *, data_dir: Path, db_name: str = "app.db"
 ) -> StdioServerParameters:
-    """Lanza ``python -m arl.mcp_server`` con la identidad simulada en su entorno."""
+    """Lanza ``python -m arl.mcp_server`` con la identidad simulada en su entorno.
+
+    El servidor hereda el entorno del proceso **sin credenciales de proveedores de LLM**
+    (``*_API_KEY``, como ``GROQ_API_KEY``): son del cliente del modelo, no del servidor. El SDK
+    agrega solo variables seguras (``get_default_environment``)."""
     env = {
-        **os.environ,
+        **_without_credentials(os.environ),
         "ARL_PRINCIPAL": principal_id,
         "ARL_DATA_DIR": str(data_dir),
         "ARL_DB_NAME": db_name,
