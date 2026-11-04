@@ -47,6 +47,15 @@ ENV_FILE = Path(".env")  # relativo al directorio actual: la raíz del repo
 _SOURCES = {"environment": "entorno", "env_file": ".env", None: None}
 
 
+TOKENS_COUNTED_NOTE = (
+    "\\* Tokens contados contra el presupuesto: los informados por el proveedor en cada llamada "
+    "con uso informado; la cota del peor caso (prompt estimado + salida máxima) en las demás "
+    "(dry-run, fallos o uso no informado)."
+)
+# Solo cambia cómo se muestra: la clave del reporte JSON se conserva (reportes históricos).
+_DISPLAY_NAMES = {"tokens_charged_worst_case": "tokens_counted*"}
+
+
 def _rate(m: dict[str, Any]) -> str:
     rate = "n/a" if m["rate"] is None else f"{m['rate'] * 100:.1f} %"
     return f"{m['numerator']}/{m['denominator']} ({rate})"
@@ -60,21 +69,36 @@ def render(report: dict[str, Any]) -> str:
         f"{meta['commit'][:8]}{' (con cambios)' if meta['dirty'] else ''}"
         + (f" · detenida: {meta['stopped']}" if meta["stopped"] else ""),
         "",
-        "| escenario | rep | fase | veredicto | clase | causa | llamadas | tokens (peor caso) |",
-        "|---|---|---|---|---|---|---|---|",
+        "| escenario | rep | fase | veredicto | clase | causa | llamadas | uso informado | "
+        "tokens contados* |",
+        "|---|---|---|---|---|---|---|---|---|",
     ]
     for r in report["results"]:
         usage = r.get("scenario_usage") or {}
+        calls = (r.get("observation") or {}).get("model_calls") or []
+        informed = f"{sum(c['usage_reported'] for c in calls)}/{len(calls)}" if usage else ""
+        cause = " ".join(
+            [r.get("cause") or ""]
+            + [
+                f"(+{c['origin']}:{c['code']}, {c['attempts']} intentos)"
+                for c in r.get("contributing_causes", [])
+            ]
+        ).strip()
         lines.append(
             f"| {r['case_id']} | {r['repetition']} | {r['phase']} | {r['verdict']} | "
-            f"{r['error_class'] or ''} | {r.get('cause') or ''} | {usage.get('calls', '')} | "
-            f"{usage.get('tokens_charged', '')} |"
+            f"{r['error_class'] or ''} | {cause} | {usage.get('calls', '')} | "
+            f"{informed} | {usage.get('tokens_charged', '')} |"
         )
-    lines.append("")
-    for group in ("functional", "safety", "attacks", "format", "provider", "usage"):
+    lines += ["", TOKENS_COUNTED_NOTE, ""]
+    if contributing := m.get("runs", {}).get("contributing_causes"):  # desde 6b1.3
+        lines.append(f"- runs.contributing_causes: {contributing}")
+    groups = ("functional", "safety", "attacks", "scope", "truthfulness", "format", "provider")
+    for group in (*groups, "usage"):
+        if group not in m:  # reportes 6b1.1, anteriores a scope y truthfulness
+            continue
         for name, value in m[group].items():
             shown = _rate(value) if isinstance(value, dict) and "rate" in value else value
-            lines.append(f"- {group}.{name}: {shown}")
+            lines.append(f"- {group}.{_DISPLAY_NAMES.get(name, name)}: {shown}")
     return "\n".join(lines)
 
 

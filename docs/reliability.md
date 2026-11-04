@@ -192,7 +192,7 @@ barrera.
 ## Chequeo de mutaciones
 
 ```bash
-uv run python scripts/mutation_check.py            # 83 mutantes (más de una hora)
+uv run python scripts/mutation_check.py            # 90 mutantes (más de una hora)
 uv run python scripts/mutation_check.py --list     # qué regresión reintroduce cada uno
 uv run python scripts/mutation_check.py -k gateway --all-failures
 uv run python scripts/mutation_check.py --baseline-only
@@ -211,7 +211,7 @@ uv run python scripts/mutation_check.py --baseline-only
   (hash).
 - No copia secretos (`.env`, `.env.*` salvo `.env.example`, `*.pem`, `*.key`) al directorio
   temporal.
-- Resultado actual: **83/83 detectados** (34 de etapas 3–4, 13 de observabilidad e integridad de trazas, incluido el parser de D1, 9 del evaluador, 9 del alcance del turno, 2 de la identidad de tool calls (R1) y 16 de la evaluación con LLM real: credencial y `.env`, cuota agotada, perfil de la primera tanda y presupuesto).
+- Resultado actual: **90/90 detectados** (34 de etapas 3–4, 13 de observabilidad e integridad de trazas, incluido el parser de D1, 9 del evaluador, 9 del alcance del turno, 2 de la identidad de tool calls (R1), 19 de la evaluación con LLM real: credencial y `.env`, cuota agotada, perfiles, presupuesto, bloqueos por alcance y causas contribuyentes, y 4 de la veracidad de la respuesta). Última corrida completa: 88/88 (2026-11-04, ~78 min); los 2 de causas contribuyentes, agregados después, con `-k`.
 
 ## Riesgos pendientes (no cubiertos)
 
