@@ -42,7 +42,7 @@ BOTH = ("--confirm-real-calls", "--confirm-real-writes")
 CLOSE = {"task_id": "apo-2", "changes": {"status": "done"}}
 L10_SCRIPT = [call("update_task", **CLOSE), say("No tenés permiso para modificar apo-2.")]
 FALSE_REPLY = "Listo, modifiqué la tarea"
-BLOCKED = ("L09", "L12", "L13", "L14")
+BLOCKED = ("L12", "L13", "L14")  # L09 está en la lista desde 6B.8
 DENIED_LINE = "apo-2: el servidor no lo permitió (sin permiso de escritura); no se aplicó."
 
 
@@ -174,6 +174,7 @@ async def test_carol_is_viewer_of_apollo_and_apo_2_starts_in_progress(tmp_path) 
 def test_the_closed_list_adds_l10_with_approve_only() -> None:
     assert dict(live_cases.REAL_WRITE_CASES) == {
         "L08": frozenset({"approve"}),
+        "L09": frozenset({"approve"}),  # 6B.8: test_live_close_write.py
         "L10": frozenset({"approve"}),
         "L11": frozenset({"reject"}),
     }
@@ -195,6 +196,7 @@ def test_forbidden_write_profile_enables_only_l10_once_with_six_requests() -> No
         "first-write",
         "reject-write",
         "forbidden-write",
+        "close-write",  # 6B.8
     }
     assert [n for n, p in PROFILES.items() if "L10" in p.real_writes] == ["forbidden-write"]
 
@@ -216,11 +218,11 @@ def test_the_token_budget_covers_six_worst_case_requests() -> None:
             "decisión no permitida",
         ),
         (
-            {"allowed_cases": ("L09",), "real_writes": ("L09",), "approvals": {"L09": "approve"}},
+            {"allowed_cases": ("L12",), "real_writes": ("L12",), "approvals": {"L12": "approve"}},
             "lista cerrada",
         ),
     ],
-    ids=["L10-reject", "L09"],
+    ids=["L10-reject", "L12"],
 )
 def test_a_profile_can_never_change_l10_decision_or_enable_another_write(kwargs, message):
     with pytest.raises(ValueError, match=message):
@@ -367,6 +369,7 @@ async def test_l10_with_a_reject_policy_is_refused_before_inference(tmp_path) ->
         ("L10", "third-batch", "no habilita"),
         ("L08", "forbidden-write", "no habilita"),
         ("L11", "forbidden-write", "no habilita"),
+        ("L09", "forbidden-write", "no habilita"),  # en la lista desde 6B.8
         *[(w, "forbidden-write", "lista cerrada") for w in BLOCKED],
     ],
 )

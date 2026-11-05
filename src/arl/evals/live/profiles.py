@@ -3,8 +3,8 @@
 Una escritura con un modelo real necesita, a la vez:
 
 1. que el escenario esté en la lista cerrada del código (``cases.REAL_WRITE_CASES``), con la
-   única decisión del humano simulado que esa lista le permite (L08 y L10 ``approve``, L11
-   ``reject``): ni el caso ni el perfil la cambian;
+   única decisión del humano simulado que esa lista le permite (L08, L09 y L10 ``approve``,
+   L11 ``reject``): ni el caso ni el perfil la cambian;
 2. que el perfil la habilite (``LiveConfig.real_writes``), y que la configuración sea
    exactamente la de un perfil registrado (``PROFILES``): un ``LiveConfig`` armado a mano o
    modificado no habilita nada;
@@ -170,6 +170,21 @@ PROFILES: dict[str, LiveConfig] = {
         allowed_cases=("L10",),
         approvals={"L10": "approve"},
         real_writes=("L10",),
+    ),
+    # Cerrar una tarea con un modelo real: solo L09, una corrida (alice, owner de apollo,
+    # ``apo-3.status=done``). El caso no declara la decisión: la declara el perfil, y la lista
+    # cerrada solo permite ``approve``. Mide ``null_padding``: un campo no pedido (p. ej.
+    # ``assignee_id: null``, que desasigna) queda fuera del alcance y se bloquea antes de la
+    # aprobación. Mismos límites que reject-write y forbidden-write.
+    "close-write": LiveConfig(
+        scenario_budget=Budget(max_model_calls=6, max_total_tokens=40_000, max_duration_s=240),
+        suite_budget=Budget(max_model_calls=6, max_total_tokens=40_000, max_duration_s=300),
+        max_model_turns=4,
+        max_tool_calls=4,
+        repeat=1,
+        allowed_cases=("L09",),
+        approvals={"L09": "approve"},
+        real_writes=("L09",),
     ),
 }
 

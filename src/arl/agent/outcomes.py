@@ -147,10 +147,54 @@ def compose(
     estado; el del modelo queda en ``model_reply``, sin mostrarse ni atribuirse al agente."""
     lines = [describe(o) for o in outcomes]
     if agent_notice:
-        lines.append(agent_notice)
+        lines.append(_limit_line(outcomes, agent_notice) if outcomes else agent_notice)
     if not lines:
         return model_reply, "model"
     return "\n".join(lines), "agent"
+
+
+_CONFIRMED = frozenset({"executed", "unchanged"})
+
+
+def _count(n: int, one: str, many: str) -> str:
+    return f"{n} {one if n == 1 else many}"
+
+
+def _limit_line(outcomes: list[dict[str, Any]], agent_notice: str) -> str:
+    """El aviso de límite cuando hubo escrituras: el del grafo ("Detuve la ejecución…") se leía
+    como si la escritura se hubiera detenido. Separa lo confirmado por el servidor, lo que no se
+    aplicó y lo que quedó sin confirmar. El aviso del grafo y el historial no cambian."""
+    from arl.agent.graph import TOOL_LIMIT_REPLY  # el grafo importa este módulo
+
+    limit = "el límite de tool calls" if agent_notice == TOOL_LIMIT_REPLY else (
+        "el límite de pasos del modelo"
+    )  # fmt: skip
+    states = [o["state"] for o in outcomes]
+    confirmed = sum(s in _CONFIRMED for s in states)
+    uncertain = states.count("uncertain")
+    pending = states.count("pending")
+    blocked = len(states) - confirmed - uncertain - pending
+    parts = [
+        _count(confirmed, "cambio confirmado", "cambios confirmados") + " por el servidor"
+        if confirmed
+        else "ningún cambio confirmado por el servidor"
+    ]
+    if blocked:
+        parts.append(
+            _count(blocked, "propuesta no aplicada", "propuestas no aplicadas")
+            + (" (rechazada o bloqueada)" if blocked == 1 else " (rechazadas o bloqueadas)")
+        )
+    if uncertain:
+        parts.append(
+            _count(uncertain, "cambio sin confirmar", "cambios sin confirmar")
+            + " (puede haberse aplicado)"
+        )
+    if pending:
+        parts.append(_count(pending, "cambio pendiente", "cambios pendientes") + " de aprobación")
+    return (
+        "El modelo no llegó a dar una respuesta final: el sistema detuvo el pedido al alcanzar "
+        f"{limit}. Según el sistema: {'; '.join(parts)}."
+    )
 
 
 # --- Nota del sistema para el turno siguiente ---------------------------------------------------

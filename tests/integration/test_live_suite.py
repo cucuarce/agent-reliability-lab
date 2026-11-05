@@ -457,10 +457,11 @@ def test_first_write_profile_allows_only_l08_once_within_four_requests() -> None
     assert (config.max_model_turns, config.max_tool_calls) == (4, 4)
     assert config.real_writes == ("L08",)
     for name, other in PROFILES.items():
-        # solo forbidden-write (L10, 6B.7) declara otra aprobación
-        assert name in ("first-write", "forbidden-write") or other.approvals == {}
-        # y solo reject-write (L11, 6B.4) y forbidden-write (L10, 6B.7) habilitan otra escritura
-        assert name in ("first-write", "reject-write", "forbidden-write") or other.real_writes == ()
+        # solo forbidden-write (L10, 6B.7) y close-write (L09, 6B.8) declaran otra aprobación
+        assert name in ("first-write", "forbidden-write", "close-write") or other.approvals == {}
+        # y solo esos y reject-write (L11, 6B.4) habilitan otra escritura
+        writes = ("first-write", "reject-write", "forbidden-write", "close-write")
+        assert name in writes or other.real_writes == ()
     with pytest.raises(ValueError, match="no autoriza"):  # aprobación de un caso no autorizado
         LiveConfig(allowed_cases=("L08",), approvals={"L09": "approve"})
 

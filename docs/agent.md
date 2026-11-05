@@ -140,6 +140,13 @@ agente sabía con certeza que se había rechazado, pero solo lo comunicaba el te
 - **Ningún mensaje del modelo se modifica ni se inventa**: los ids de tool calls y el checkpoint
   no cambian fuera de `write_outcomes`. El turno no se corta al rechazar: el permiso se libera y
   el modelo puede volver a proponer, con su alcance y su aprobación (no hay veto persistente).
+- **Aviso de límite con escrituras (6B.8).** Si el turno termina por `turn_limit` o `tool_limit`
+  y hubo resultados, `user_reply` no repite "Detuve la ejecución…" (se leía como si la escritura
+  se hubiera detenido): la última línea dice que el modelo no llegó a dar una respuesta final y
+  cuenta, según el sistema, los cambios confirmados por el servidor, las propuestas no aplicadas
+  (rechazadas o bloqueadas) y los cambios sin confirmar o pendientes. `TURN_LIMIT_REPLY`, el
+  historial y `last_ai_text` no cambian; sin escrituras, el aviso es el de siempre. Tests:
+  `tests/unit/test_outcomes_limit_notice.py`.
 - **Turno siguiente.** El historial guarda el texto original del modelo, que el usuario quizá no
   vio. Si el turno anterior terminó con `reply_source = "agent"`, `run_turn` agrega antes del
   mensaje nuevo una **nota del sistema** (`SystemMessage`, no del modelo ni del usuario) que
