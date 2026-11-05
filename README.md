@@ -44,7 +44,7 @@ uv run pytest                # todos los tests
 uv run ruff check .          # lint
 uv run ruff format --check . # formato
 uv run pytest --cov=arl --cov-branch  # cobertura
-uv run python scripts/mutation_check.py  # ¿los tests detectan las regresiones? (~10 min)
+uv run python scripts/mutation_check.py --check-fragments  # catálogo de mutantes (docs/reliability.md)
 uv run python scripts/sample_trace.py --out <dir>  # trazas de ejemplo (datos sintéticos)
 uv run python -m arl.evals                        # suite de evaluación -> evals/reports/<fecha>/
 uv run python -m arl.tracing show <run_id> --dir <dir>/traces  # reconstruir una ejecución

@@ -10,25 +10,44 @@ empezar). Un Ctrl+C o un kill no pueden dejar código mutado en el repo.
 Línea base obligatoria: si la suite sin mutar no pasa en la copia, aborta (exit 2), porque un
 test roto "mataría" mutantes que no detecta.
 
+Estados de cada mutante (6B.11): ``KILLED`` (pytest falla con tests identificados), ``SURVIVED``
+(pytest pasa), ``TIMEOUT`` (superó ``--timeout``; se mata el árbol de procesos) y ``ERROR``
+(pytest no terminó por un test: error interno, de uso, sin tests). Solo ``KILLED`` cuenta como
+detectado. Un mutante con ``tests`` propios (focalizados) corre solo esos; los demás, ``TESTS``
+completa. Con ``--results`` cada mutante deja una línea JSONL al terminar (commit, configuración,
+estado, duración, código de salida y tests), así una corrida cortada conserva lo hecho.
+
 Uso:
     uv run python scripts/mutation_check.py            # todos los mutantes (-x: rápido)
     uv run python scripts/mutation_check.py --list
+    uv run python scripts/mutation_check.py --check-fragments   # sin pytest ni mutaciones
+    uv run python scripts/mutation_check.py --group P1 --timeout 300 --results <afuera>.jsonl
     uv run python scripts/mutation_check.py -k runtime --all-failures
 
-Exit: 0 todos detectados, 1 hay sobrevivientes, 2 abortado (línea base, fragmento inválido o
-mutante que no compila).
+Exit: 0 todos detectados, 1 hay sobrevivientes, timeouts o errores, 2 abortado (línea base,
+fragmento inválido, mutante que no compila, tests focalizados fuera de ``TESTS`` o restauración
+fallida).
 """
 
 from __future__ import annotations
 
 import argparse
+import contextlib
+import hashlib
+import json
 import os
+import platform
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import time
+from collections.abc import Iterator
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 TESTS = [
@@ -63,10 +82,34 @@ TESTS = [
     "tests/integration/test_live_suite.py",
     "tests/integration/test_live_first_write.py",
     "tests/integration/test_live_reject_write.py",
+    # 6B.11: dominio (autorización, versión, idempotencia), respuesta visible, transcripción y
+    # escrituras reales de L09 a L14. Los mutantes P1 corren solo sus tests focalizados.
+    "tests/unit/test_policy.py",
+    "tests/integration/test_service_authorization.py",
+    "tests/integration/test_idempotency.py",
+    "tests/integration/test_update_policies.py",
+    "tests/integration/test_mcp_server.py",
+    "tests/integration/test_agent_outcomes.py",
+    "tests/unit/test_outcomes_blocked_wording.py",
+    "tests/unit/test_outcomes_limit_notice.py",
+    "tests/integration/test_live_replies.py",
+    "tests/unit/test_live_communication.py",
+    "tests/integration/test_live_transcript.py",
+    "tests/integration/test_live_external_writes.py",
+    "tests/integration/test_live_close_write.py",
+    "tests/integration/test_live_forbidden_write.py",
+    "tests/integration/test_live_read_then_write.py",
+    "tests/integration/test_live_conflict_write.py",
+    "tests/integration/test_live_injected_write.py",
 ]
 _COPY_IGNORE_PATTERNS = shutil.ignore_patterns(
-    ".git", ".venv", "__pycache__", ".pytest_cache", ".ruff_cache", "var", "*.db", "htmlcov"
-)
+    ".git", ".venv", "__pycache__", ".pytest_cache", ".ruff_cache", "var", "htmlcov",
+    # bases SQLite, reportes y transcripciones: nunca entran a la copia (6B.11)
+    "*.db", "*.db-*", "*.sqlite", "*.sqlite3", "*.jsonl", "live-reports", "live-transcripts",
+)  # fmt: skip
+# Variables que el proceso de pytest nunca hereda: los tests que necesitan una credencial la
+# fijan ellos mismos (canarios).
+_SECRET_ENV_MARKERS = ("API_KEY", "SECRET", "TOKEN", "PASSWORD")
 
 
 def COPY_IGNORE(directory: str, names: list[str]) -> set[str]:
@@ -107,15 +150,25 @@ QUERY = "src/arl/tracing/query.py"
 LOGGING = "src/arl/tracing/logging_setup.py"
 
 
+SERVICE = "src/arl/services/project_service.py"
+POLICY = "src/arl/domain/policy.py"
+OUTCOMES = "src/arl/agent/outcomes.py"
+TRANSCRIPT = "src/arl/evals/live/transcript.py"
+
+
 @dataclass(frozen=True)
 class Mutant:
     name: str
     path: str
     old: str
     new: str
+    # Tests focalizados (archivo o ``archivo::test``, siempre de un archivo de ``TESTS``). Vacío:
+    # la lista ``TESTS`` completa, como los mutantes históricos.
+    tests: tuple[str, ...] = ()
+    group: str = "historical"
 
 
-MUTANTS = [
+HISTORICAL = [
     # --- Identidad y aprobación (etapa 3) ---
     Mutant("runtime: _check_owner no verifica", RUNTIME,
            "if owner is not None and owner != principal_id:", "if False:"),
@@ -445,14 +498,189 @@ MUTANTS = [
 ]  # fmt: skip
 
 
-def run_pytest(copy: Path, tests: list[str], stop_first: bool) -> subprocess.CompletedProcess:
-    env = {**os.environ, "PYTHONPATH": str(copy / "src")}
+# --- P1: regresiones críticas de seguridad (etapa 6B.11) -----------------------------------------
+# Cada uno reintroduce un defecto real (no equivalente) y corre solo sus tests focalizados. Cuando
+# hay dos, uno prueba la regla en su capa y el otro el efecto de punta a punta (ver docs).
+_SVC = "tests/integration/test_service_authorization.py"
+_IDEM = "tests/integration/test_idempotency.py"
+_SCOPE_UNIT = "tests/unit/test_request_scope.py::test_grant_allows_only_its_tasks_fields_and_values"
+_INJECTED = "tests/integration/test_live_injected_write.py"
+_CONFLICT = "tests/integration/test_live_conflict_write.py"
+_EXTERNAL = "tests/integration/test_live_external_writes.py"
+_CAS_BLOCK_OLD = (
+    "            if task.version != expected_version:\n"
+    "                raise VersionConflict(task_id, expected_version, task.version)\n"
+    "\n"
+    "            now = self._clock().isoformat()\n"
+    '            current = task.model_dump(mode="json")\n'
+    "            effective = {\n"
+    "                field: value for field, value in changes.items() if current[field] != value\n"
+    "            }\n"
+    "            if not effective:\n"
+    "                result = UpdateResult(task=task, outcome=UpdateOutcome.UNCHANGED, "
+    "audit_id=None)\n"
+    "            else:\n"
+    "                if not repositories.update_task(conn, task_id, effective, expected_version):\n"
+)
+# Sin el chequeo de versión **y** con el compare-and-set sobre la versión actual: cada capa sola
+# es equivalente (la otra frena la escritura vieja), así que se mutan las dos.
+_CAS_BLOCK_NEW = _CAS_BLOCK_OLD.replace(
+    "            if task.version != expected_version:\n"
+    "                raise VersionConflict(task_id, expected_version, task.version)\n"
+    "\n",
+    "",
+).replace(
+    "(conn, task_id, effective, expected_version)", "(conn, task_id, effective, task.version)"
+)
+
+P1 = [
+    Mutant("P1 dominio: un viewer puede modificar tareas (política)", POLICY,
+           "    Action.UPDATE_TASK: frozenset({Role.EDITOR, Role.OWNER}),",
+           "    Action.UPDATE_TASK: frozenset({Role.VIEWER, Role.EDITOR, Role.OWNER}),",
+           ("tests/unit/test_policy.py", f"{_SVC}::test_viewer_cannot_update"), "P1"),
+    Mutant("P1 dominio: un no miembro lee el proyecto como viewer", SERVICE,
+           "            if role is None or not is_allowed(role, Action.READ_PROJECT):\n"
+           '                raise NotFound("proyecto", project_id)',
+           '            role = role or "viewer"',
+           (f"{_SVC}::test_foreign_and_missing_projects_are_indistinguishable",), "P1"),
+    Mutant("P1 dominio: update_task no verifica el rol de escritura", SERVICE,
+           "            if not is_allowed(role, Action.UPDATE_TASK):", "            if False:",
+           (f"{_SVC}::test_viewer_cannot_update",), "P1"),
+    Mutant("P1 dominio: sin control de versión ni compare-and-set", SERVICE,
+           _CAS_BLOCK_OLD, _CAS_BLOCK_NEW,
+           (f"{_SVC}::test_stale_version_is_rejected",
+            f"{_IDEM}::test_concurrent_writers_with_same_version_have_one_winner"), "P1"),
+    Mutant("P1 idempotencia: un reintento no devuelve la respuesta guardada", SERVICE,
+           "            if previous is not None:", "            if False:",
+           (f"{_IDEM}::test_retry_with_same_key_and_params_does_not_duplicate",), "P1"),
+    Mutant("P1 idempotencia: misma clave con otros parámetros hace replay", SERVICE,
+           "                    raise IdempotencyConflict(key)", "                    pass",
+           (f"{_IDEM}::test_same_key_with_different_params_conflicts",), "P1"),
+    Mutant("P1 alcance: covers no verifica la tarea (resource)", SCOPE,
+           '        if task_id not in self.task_ids:\n            return "resource"',
+           '        if False:\n            return "resource"',
+           (_SCOPE_UNIT,
+            f"{_INJECTED}::test_a_only_apo_4_is_blocked_before_approval_and_apo_3_stays_open"),
+           "P1"),
+    Mutant("P1 alcance: covers no verifica los campos (field)", SCOPE,
+           '        if set(changes) - set(self.fields):\n            return "field"\n'
+           "        for name, value in changes.items():\n"
+           "            allowed = self.fields[name]",
+           "        for name, value in changes.items():\n"
+           "            allowed = self.fields.get(name)",
+           (_SCOPE_UNIT,
+            f"{_INJECTED}::test_e_null_padding_on_apo_3_is_blocked_and_the_correction_writes_once"),
+           "P1"),
+    Mutant("P1 alcance: covers no verifica el valor (value)", SCOPE,
+           "            if allowed is not None and value not in allowed:",
+           "            if False:",
+           (_SCOPE_UNIT,
+            "tests/unit/test_request_scope.py::test_unassigning_is_a_value_that_must_be_allowed"),
+           "P1"),
+    Mutant("P1 respuesta: con escrituras se muestra el texto del modelo", OUTCOMES,
+           "    if not lines:\n        return model_reply, \"model\"",
+           "    if True:\n        return model_reply, \"model\"",
+           ("tests/integration/test_agent_outcomes.py"
+            "::test_an_executed_write_is_reported_from_the_server_confirmation",
+            f"{_CONFLICT}::test_user_reply_never_claims_the_write_the_server_refused"), "P1"),
+    Mutant("P1 respuesta: version_conflict se informa como ejecutada", OUTCOMES,
+           '    "version_conflict": "conflict",', '    "version_conflict": "executed",',
+           (f"{_CONFLICT}::test_l13_keeps_bobs_change_and_never_applies_alices",
+            f"{_EXTERNAL}::test_bobs_change_is_never_attributed_to_the_agent"), "P1"),
+    Mutant("P1 transcripción: no se redactan secretos", TRANSCRIPT,
+           "        return _SECRETS.subn(REDACTED, value)", "        return value, 0",
+           ("tests/integration/test_live_transcript.py"
+            "::test_transcript_never_copies_reasoning_headers_or_credentials",), "P1"),
+    Mutant("P1 atribución: _own_audit cuenta escrituras de otros actores", EVAL_GRADERS,
+           '    return [a for a in obs.audit if a["idempotency_key"] not in external]',
+           "    return list(obs.audit)",
+           (f"{_EXTERNAL}::test_bobs_change_is_never_attributed_to_the_agent",
+            f"{_CONFLICT}::test_l13_keeps_bobs_change_and_never_applies_alices"), "P1"),
+    Mutant("P1 atribución: writes_executed suma filas de otros actores", LIVE_SUITE,
+           '                sum(r["observation"]["own_audit_rows"] for r in ran),',
+           '                sum(r["observation"]["audit_rows"] for r in ran),',
+           (f"{_EXTERNAL}::test_bobs_concurrent_change_is_recorded_as_an_external_write",), "P1"),
+    Mutant("P1 atribución: writes.effective cuenta el ledger de otros actores", LIVE_SUITE,
+           '    own = Counter(row["outcome"] for row in obs.ledger if row["key"] not in external)',
+           '    own = Counter(row["outcome"] for row in obs.ledger)',
+           (f"{_EXTERNAL}::test_bobs_ledger_entry_is_not_an_effective_write_of_the_agent",), "P1"),
+    Mutant("P1 atribución: toda fila de audit_log se marca como propia", LIVE_SUITE,
+           '                "own": a["idempotency_key"] not in external,',
+           '                "own": True,',
+           (f"{_EXTERNAL}::test_bobs_concurrent_change_is_recorded_as_an_external_write",), "P1"),
+]  # fmt: skip
+
+MUTANTS = HISTORICAL + P1
+
+KILLED, SURVIVED, TIMEOUT, ERROR = "KILLED", "SURVIVED", "TIMEOUT", "ERROR"
+DEFAULT_TIMEOUT_S = 900.0  # por mutante
+DEFAULT_BASELINE_TIMEOUT_S = 1800.0
+
+
+def child_env(copy: Path) -> dict[str, str]:
+    """El entorno de pytest: importa la copia y nunca hereda credenciales."""
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if not any(marker in k.upper() for marker in _SECRET_ENV_MARKERS)
+    }
+    env["PYTHONPATH"] = str(copy / "src")
+    return env
+
+
+def _kill_tree(proc: subprocess.Popen) -> None:
+    """Termina pytest y todos sus hijos (servidores MCP, subprocesos de los tests)."""
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+            capture_output=True, check=False,
+        )  # fmt: skip
+    else:
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(proc.pid, signal.SIGKILL)
+    with contextlib.suppress(OSError):
+        proc.kill()
+
+
+@dataclass(frozen=True)
+class PytestRun:
+    returncode: int | None  # None: timeout
+    stdout: str
+    duration_s: float
+
+    @property
+    def timed_out(self) -> bool:
+        return self.returncode is None
+
+
+def run_pytest(
+    copy: Path, tests: list[str], stop_first: bool, timeout: float | None = None
+) -> PytestRun:
     args = [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", *tests]
     if stop_first:
         args.insert(4, "-x")
-    return subprocess.run(
-        args, cwd=copy, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace"
+    group = (
+        {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}  # type: ignore[attr-defined]
+        if os.name == "nt"
+        else {"start_new_session": True}
     )
+    started = time.monotonic()
+    proc = subprocess.Popen(
+        args, cwd=copy, env=child_env(copy), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, encoding="utf-8", errors="replace", **group,
+    )  # fmt: skip
+    try:
+        stdout, _ = proc.communicate(timeout=timeout)
+        code: int | None = proc.returncode
+    except subprocess.TimeoutExpired:
+        _kill_tree(proc)
+        stdout, _ = proc.communicate()
+        code = None
+    except BaseException:  # Ctrl+C: el árbol de pytest nunca queda vivo
+        _kill_tree(proc)
+        proc.wait()
+        raise
+    return PytestRun(code, stdout or "", round(time.monotonic() - started, 2))
 
 
 def failed_tests(output: str) -> list[str]:
@@ -464,83 +692,231 @@ def failed_tests(output: str) -> list[str]:
     return sorted(names)
 
 
+def classify(run: PytestRun, killers: list[str]) -> str:
+    """Solo un fallo de tests identificado detecta el mutante. pytest: 0 pasa, 1 tests
+    fallidos, 2 interrumpido o error de colección, 3 error interno, 4 uso, 5 sin tests."""
+    if run.timed_out:
+        return TIMEOUT
+    if run.returncode == 0:
+        return SURVIVED
+    if run.returncode in (1, 2) and killers:
+        return KILLED
+    return ERROR
+
+
 def check_isolation(copy: Path) -> None:
     """Aborta si el paquete importado no es el de la copia (mutar no tendría efecto)."""
-    env = {**os.environ, "PYTHONPATH": str(copy / "src")}
     imported = subprocess.run(
         [sys.executable, "-c", "import arl; print(arl.__file__)"],
-        cwd=copy, env=env, capture_output=True, text=True, check=True,
+        cwd=copy, env=child_env(copy), capture_output=True, text=True, check=True,
     ).stdout.strip()  # fmt: skip
     if not Path(imported).resolve().is_relative_to(copy.resolve()):
         sys.exit(f"ABORT: se importa {imported}, no la copia en {copy}")
 
 
+def tests_for(mutant: Mutant) -> list[str]:
+    return list(mutant.tests) or list(TESTS)
+
+
+def catalog_problems(root: Path, mutants: list[Mutant]) -> list[str]:
+    """Problemas estáticos del catálogo, sin pytest ni mutaciones en disco: fragmento único,
+    mutante que compila, nombres únicos y tests focalizados dentro de ``TESTS``."""
+    problems = []
+    names = [m.name for m in mutants]
+    problems += [f"nombre repetido: {n}" for n in sorted({n for n in names if names.count(n) > 1})]
+    for mutant in mutants:
+        target = root / mutant.path
+        if not target.is_file():
+            problems.append(f"'{mutant.name}': no existe {mutant.path}")
+            continue
+        original = target.read_text(encoding="utf-8")
+        count = original.count(mutant.old)
+        if count != 1:
+            problems.append(f"'{mutant.name}': el fragmento aparece {count} veces")
+            continue
+        if mutant.old == mutant.new:
+            problems.append(f"'{mutant.name}': el mutante no cambia nada")
+        try:
+            compile(original.replace(mutant.old, mutant.new), str(target), "exec")
+        except SyntaxError as exc:
+            problems.append(f"'{mutant.name}': no es Python válido (línea {exc.lineno})")
+        for test in mutant.tests:
+            file = test.split("::")[0]
+            if file not in TESTS:
+                problems.append(f"'{mutant.name}': {file} no está en TESTS")
+            elif not (root / file).is_file():
+                problems.append(f"'{mutant.name}': no existe {file}")
+    return problems
+
+
+def _sha(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+class RestoreError(RuntimeError):
+    pass
+
+
+@contextlib.contextmanager
+def mutated(target: Path, mutant: Mutant) -> Iterator[None]:
+    """Aplica el mutante a la copia y la restaura siempre (también ante excepciones o Ctrl+C);
+    verifica la restauración por hash."""
+    original = target.read_text(encoding="utf-8")
+    target.write_text(original.replace(mutant.old, mutant.new), encoding="utf-8")
+    try:
+        yield
+    finally:
+        target.write_text(original, encoding="utf-8")
+        if _sha(target.read_text(encoding="utf-8")) != _sha(original):
+            raise RestoreError(f"no se pudo restaurar {mutant.path}")
+
+
+def git_state(root: Path) -> dict[str, Any]:
+    def git(*args: str) -> str | None:
+        try:
+            out = subprocess.run(
+                ["git", "-C", str(root), *args], capture_output=True, text=True, check=True
+            )
+        except (OSError, subprocess.CalledProcessError):
+            return None
+        return out.stdout.strip()
+
+    status = git("status", "--porcelain")
+    return {"commit": git("rev-parse", "HEAD"), "dirty": None if status is None else bool(status)}
+
+
+class Results:
+    """JSONL incremental: una línea por evento, escrita y vaciada al terminar cada mutante."""
+
+    def __init__(self, path: Path | None) -> None:
+        self.path = path
+        if path is not None:
+            path.parent.mkdir(parents=True, exist_ok=True)
+
+    def write(self, record: dict[str, Any]) -> None:
+        if self.path is None:
+            return
+        with self.path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+
+
+def _results_path(raw: str | None) -> Path | None:
+    if raw is None:
+        return None
+    path = Path(raw).resolve()
+    if path.is_relative_to(ROOT.resolve()):
+        sys.exit("ABORT: --results va fuera del repositorio (no se versionan resultados)")
+    return path
+
+
+def _now() -> str:
+    return datetime.now(UTC).isoformat(timespec="seconds")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("-k", dest="keyword", help="solo mutantes cuyo nombre contenga el texto")
+    parser.add_argument("--group", help="solo mutantes de ese grupo (historical, P1)")
     parser.add_argument("--list", action="store_true", help="lista los mutantes y termina")
+    parser.add_argument(
+        "--check-fragments", action="store_true",
+        help="verifica el catálogo (fragmentos, compilación, tests) sin pytest ni mutaciones",
+    )  # fmt: skip
     parser.add_argument(
         "--all-failures", action="store_true", help="sin -x: reporta todos los tests que fallan"
     )
     parser.add_argument(
         "--baseline-only", action="store_true", help="solo verifica la línea base en la copia"
     )
+    parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT_S, help="s por mutante")
+    parser.add_argument("--baseline-timeout", type=float, default=DEFAULT_BASELINE_TIMEOUT_S)
+    parser.add_argument("--results", help="archivo JSONL de resultados, fuera del repositorio")
     args = parser.parse_args()
 
-    mutants = [m for m in MUTANTS if not args.keyword or args.keyword in m.name]
+    mutants = [
+        m
+        for m in MUTANTS
+        if (not args.keyword or args.keyword in m.name)
+        and (not args.group or m.group == args.group)
+    ]
     if args.list:
         for mutant in mutants:
-            print(f"- {mutant.name}  ({mutant.path})")
+            scope = ", ".join(mutant.tests) if mutant.tests else f"TESTS ({len(TESTS)} archivos)"
+            print(f"- [{mutant.group}] {mutant.name}  ({mutant.path})\n    tests: {scope}")
+        return 0
+    problems = catalog_problems(ROOT, mutants)
+    if problems:
+        print("ABORT: catálogo inválido")
+        print("\n".join(f"  {p}" for p in problems))
+        return 2
+    if args.check_fragments:
+        print(f"Catálogo OK: {len(mutants)} mutantes, fragmentos únicos y compilables")
         return 0
 
+    results = Results(_results_path(args.results))
+    baseline_tests = list(dict.fromkeys(t for m in mutants for t in tests_for(m)))
+    results.write({
+        "record": "run", "started_at": _now(), **git_state(ROOT),
+        "python": platform.python_version(),
+        "selection": {"keyword": args.keyword, "group": args.group, "mutants": len(mutants)},
+        "tests": TESTS, "baseline_tests": baseline_tests, "stop_first": not args.all_failures,
+        "timeout_s": args.timeout, "baseline_timeout_s": args.baseline_timeout,
+    })  # fmt: skip
+    started = time.monotonic()
     with tempfile.TemporaryDirectory(prefix="arl-mutation-") as tmp:
         copy = Path(tmp) / "repo"
         shutil.copytree(ROOT, copy, ignore=COPY_IGNORE)
         check_isolation(copy)
 
-        baseline = run_pytest(copy, TESTS, stop_first=False)
+        baseline = run_pytest(copy, baseline_tests, stop_first=False, timeout=args.baseline_timeout)
         summary = baseline.stdout.strip().splitlines()[-1] if baseline.stdout.strip() else ""
+        results.write({"record": "baseline", "returncode": baseline.returncode,
+                       "timed_out": baseline.timed_out, "duration_s": baseline.duration_s,
+                       "summary": summary})  # fmt: skip
         if baseline.returncode != 0:
-            print(f"ABORT: la suite sin mutaciones no pasa ({summary})")
+            reason = "superó el timeout" if baseline.timed_out else f"no pasa ({summary})"
+            print(f"ABORT: la suite sin mutaciones {reason}")
             print("\n".join(failed_tests(baseline.stdout)))
             details = [ln for ln in baseline.stdout.splitlines() if ln.startswith("E ")]
             print("\n".join(details[:40]))
             return 2
-        print(f"Línea base OK: {summary}\n")
+        print(f"Línea base OK: {summary} ({baseline.duration_s} s)\n")
         if args.baseline_only:
             return 0
 
-        survivors = []
+        counts = {KILLED: 0, SURVIVED: 0, TIMEOUT: 0, ERROR: 0}
+        flagged: list[tuple[str, str]] = []
         for mutant in mutants:
-            target = copy / mutant.path
-            original = target.read_text(encoding="utf-8")
-            if original.count(mutant.old) != 1:
-                print(f"ABORT: '{mutant.name}': el fragmento aparece {original.count(mutant.old)} "
-                      "veces (¿cambió el código?)")  # fmt: skip
-                return 2
-            mutated = original.replace(mutant.old, mutant.new)
-            try:  # un mutante que no compila "mataría" la suite por otro motivo
-                compile(mutated, str(target), "exec")
-            except SyntaxError as exc:
-                print(f"ABORT: '{mutant.name}' no es Python válido (línea {exc.lineno})")
-                return 2
-            target.write_text(mutated, encoding="utf-8")
+            tests = tests_for(mutant)
             try:
-                run = run_pytest(copy, TESTS, stop_first=not args.all_failures)
-            finally:
-                target.write_text(original, encoding="utf-8")
+                with mutated(copy / mutant.path, mutant):
+                    run = run_pytest(copy, tests, not args.all_failures, timeout=args.timeout)
+            except RestoreError as exc:
+                print(f"ABORT: {exc}")
+                return 2
             killers = failed_tests(run.stdout)
-            status = "KILLED  " if run.returncode != 0 else "SURVIVED"
-            print(f"{status} {mutant.name}")
+            status = classify(run, killers)
+            counts[status] += 1
+            results.write({
+                "record": "mutant", "name": mutant.name, "group": mutant.group,
+                "path": mutant.path, "status": status, "returncode": run.returncode,
+                "duration_s": run.duration_s, "tests": tests, "killers": killers,
+            })  # fmt: skip
+            print(f"{status:<8} {mutant.name}  ({run.duration_s} s)")
             for test in killers[:4]:
                 print(f"           - {test}")
-            if run.returncode == 0:
-                survivors.append(mutant.name)
+            if status != KILLED:
+                flagged.append((status, mutant.name))
 
-    print(f"\n{len(mutants) - len(survivors)}/{len(mutants)} mutantes detectados")
-    for name in survivors:
-        print(f"  sobrevivió: {name}")
-    return 1 if survivors else 0
+    elapsed = round(time.monotonic() - started, 1)
+    results.write({"record": "summary", "finished_at": _now(), "duration_s": elapsed, **counts})
+    print(f"\n{counts[KILLED]}/{len(mutants)} mutantes detectados ({elapsed} s)")
+    print(", ".join(f"{k}: {v}" for k, v in counts.items()))
+    for status, name in flagged:
+        print(f"  {status.lower()}: {name}")
+    return 1 if flagged else 0
 
 
 if __name__ == "__main__":

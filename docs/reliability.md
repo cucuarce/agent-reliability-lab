@@ -192,26 +192,96 @@ barrera.
 ## Chequeo de mutaciones
 
 ```bash
-uv run python scripts/mutation_check.py            # 110 mutantes (más de una hora)
-uv run python scripts/mutation_check.py --list     # qué regresión reintroduce cada uno
+uv run python scripts/mutation_check.py --check-fragments   # catálogo: sin pytest ni mutaciones
+uv run python scripts/mutation_check.py --list --group P1   # qué regresión y qué tests
+uv run python scripts/mutation_check.py --group P1 --timeout 120 --results <afuera>.jsonl
+uv run python scripts/mutation_check.py --group historical --results <afuera>.jsonl
 uv run python scripts/mutation_check.py -k gateway --all-failures
 uv run python scripts/mutation_check.py --baseline-only
 ```
 
 - **Seguro:** copia el repo a un directorio temporal, muta solo la copia y verifica que `arl` se
-  importe desde ella. El árbol de trabajo nunca se modifica.
-- **Línea base obligatoria:** si la suite sin mutar falla en la copia, aborta (exit 2). Un test
-  roto haría pasar por "detectados" mutantes que en realidad no detecta.
-- Si un fragmento ya no coincide con el código, o el mutante no compila, aborta en lugar de
-  reportar un falso "KILLED". El chequeo de compilación se agregó en la etapa 5, después de que
-  un mutante con un `SyntaxError` apareciera como "detectado".
+  importe desde ella. El árbol de trabajo nunca se modifica. Cada mutación se revierte en un
+  `finally` (también ante una excepción o Ctrl+C) y se verifica por hash; si no se puede
+  restaurar, aborta.
+- **La copia no lleva** secretos (`.env`, `.env.*` salvo `.env.example`, `*.pem`, `*.key`), bases
+  SQLite (`*.db`, `*.db-*`, `*.sqlite`, `*.sqlite3`), reportes (`live-reports`) ni
+  transcripciones (`live-transcripts`, `*.jsonl`). pytest no hereda variables con `API_KEY`,
+  `SECRET`, `TOKEN` o `PASSWORD` en el nombre (los tests usan canarios propios).
+- **Línea base obligatoria:** si los tests sin mutar fallan o superan `--baseline-timeout` en la
+  copia, aborta (exit 2). La línea base corre la unión de los tests de los mutantes elegidos.
+- **Catálogo verificado antes de copiar:** fragmento único, mutante que compila, nombres únicos y
+  tests focalizados dentro de `TESTS`. Si algo falla, aborta (exit 2) en lugar de reportar un
+  falso "KILLED". El chequeo de compilación se agregó en la etapa 5, después de que un mutante con
+  un `SyntaxError` apareciera como "detectado".
+- **Estados (6B.11), separados:** `KILLED` (pytest falla con un test identificado; también un
+  error de colección causado por el mutante), `SURVIVED` (pytest pasa), `TIMEOUT` (superó
+  `--timeout`; se mata el árbol de procesos de pytest, con `taskkill /T` en Windows o el grupo de
+  procesos en POSIX) y `ERROR` (pytest terminó sin un test fallido identificado: error interno, de
+  uso, sin tests). **Solo `KILLED` cuenta como detectado**; los otros tres dan exit 1 y quedan
+  para revisar.
+- **Resultados incrementales** (`--results`, siempre fuera del repositorio): una línea JSONL por
+  evento, escrita y vaciada al terminar cada mutante: `run` (commit, `dirty`, versión de Python,
+  selección, `TESTS`, tests de la línea base, `-x`, timeouts), `baseline`, `mutant` (nombre, grupo,
+  archivo, estado, código de salida, duración, tests corridos y tests que lo detectaron) y
+  `summary`. Una corrida cortada conserva lo hecho.
+- **Tests focalizados:** un mutante puede declarar sus tests (`archivo::test`); si no, corre la
+  lista `TESTS` completa, como los históricos.
 - Estas propiedades tienen tests propios (`tests/unit/test_mutation_check.py`), que ejecutan el
-  script real sobre un repositorio mínimo: una línea base rota da exit 2 sin aplicar mutantes; un
-  fragmento desactualizado o un mutante que no compila dan exit 2; un sobreviviente da exit 1; el árbol original queda idéntico
-  (hash).
-- No copia secretos (`.env`, `.env.*` salvo `.env.example`, `*.pem`, `*.key`) al directorio
-  temporal.
-- Resultado actual: **110/110 detectados** (34 de etapas 3–4, 13 de observabilidad e integridad de trazas, incluido el parser de D1, 9 del evaluador, 9 del alcance del turno, 2 de la identidad de tool calls (R1), 39 de la evaluación con LLM real: credencial y `.env`, cuota agotada, perfiles, presupuesto, bloqueos por alcance, causas contribuyentes, política de aprobación y habilitación de la primera escritura (lista cerrada, perfil registrado, `--confirm-real-writes`, re-autorización, alcance de la aprobación simulada y aislamiento; y, desde 6B.4, la decisión permitida por escritura y el presupuesto de `reject-write`), y 4 de la veracidad de la respuesta). Última corrida completa: 88/88 (2026-11-04, ~78 min); los 22 agregados después (causas contribuyentes, política de aprobación, habilitación de L08 y decisión permitida de L11), con `-k "live: "`: 39/39 (2026-11-05; el del presupuesto de `reject-write` sobrevivió en la primera corrida y se detecta tras agregar el test del peor caso).
+  script real sobre un repositorio mínimo (sin mutantes del proyecto): línea base rota, fragmento
+  desactualizado y mutante que no compila dan exit 2; un sobreviviente da exit 1; un timeout da
+  `TIMEOUT` (nunca `KILLED`) y no deja vivo ni a un nieto de pytest; resultados JSONL;
+  `--results` dentro del repo rechazado; tests focalizados en lugar de la lista completa y fuera
+  de `TESTS` rechazados; restauración ante una excepción; exclusiones de la copia; entorno sin
+  credenciales; y el catálogo real (110 históricos + 16 P1, fragmentos únicos y compilables).
+
+### Catálogo
+
+| Grupo | Mutantes | Tests | Estado |
+|---|---|---|---|
+| `historical` | 110: 34 de etapas 3–4, 13 de observabilidad e integridad de trazas (incluido el parser de D1), 9 del evaluador, 9 del alcance del turno, 2 de la identidad de tool calls (R1), 39 de la evaluación con LLM real y 4 de la veracidad | `TESTS` completa (48 archivos desde 6B.11) | **pendiente de validación sobre el código actual** |
+| `P1` (6B.11) | 16: autorización de dominio (3), concurrencia (1), idempotencia (2), `RequestScope` por `resource`, `field` y `value` (3), respuesta visible autoritativa (2), redacción de la transcripción (1) y atribución propia y externa (4) | focalizados (18 tests en total) | **nunca ejecutados** |
+
+Mutantes P1 y sus tests focalizados (`--list --group P1` los muestra):
+
+| Mutante | Defecto que reintroduce | Tests |
+|---|---|---|
+| un viewer puede modificar tareas (política) | carol (viewer) cerraría apo-2 | `test_policy.py` (matriz) y `test_viewer_cannot_update` (efecto en el servicio) |
+| un no miembro lee el proyecto como viewer | dave leería Apollo | `test_foreign_and_missing_projects_are_indistinguishable` |
+| `update_task` no verifica el rol de escritura | viewer escribe | `test_viewer_cannot_update` |
+| sin control de versión ni compare-and-set | escritura con versión vieja (L13 sin conflicto) | `test_stale_version_is_rejected` y `test_concurrent_writers_with_same_version_have_one_winner` |
+| un reintento no devuelve la respuesta guardada | el reintento de una escritura aplicada da conflicto | `test_retry_with_same_key_and_params_does_not_duplicate` |
+| misma clave con otros parámetros hace replay | otra acción recibe la respuesta de la primera | `test_same_key_with_different_params_conflicts` |
+| `covers` no verifica la tarea | L12: apo-4 pasaría el alcance | `test_grant_allows_only_its_tasks_fields_and_values` y el guion A de L12 |
+| `covers` no verifica los campos | `null_padding` (desasignar) pasaría | ídem y el guion E de L12 |
+| `covers` no verifica el valor | otro estado pasaría | `test_grant_allows_only_its_tasks_fields_and_values` y `test_unassigning_is_a_value_that_must_be_allowed` |
+| con escrituras se muestra el texto del modelo | el usuario vería una afirmación falsa | `test_an_executed_write_is_reported_from_the_server_confirmation` y `test_user_reply_never_claims_the_write_the_server_refused` |
+| `version_conflict` se informa como ejecutada | L13 diría "se aplicó" | `test_l13_keeps_bobs_change_and_never_applies_alices` y `test_bobs_change_is_never_attributed_to_the_agent` |
+| la transcripción no redacta secretos | un `gsk_…` quedaría escrito | `test_transcript_never_copies_reasoning_headers_or_credentials` |
+| `_own_audit` cuenta escrituras de otros actores | la escritura de bob sería del agente | `test_bobs_change_is_never_attributed_to_the_agent` y `test_l13_keeps_bobs_change_and_never_applies_alices` |
+| `writes_executed` suma filas de otros actores | métrica de seguridad inflada | `test_bobs_concurrent_change_is_recorded_as_an_external_write` |
+| `writes.effective` cuenta el ledger de otros actores | escritura efectiva inexistente | `test_bobs_ledger_entry_is_not_an_effective_write_of_the_agent` |
+| toda fila de `audit_log` se marca como propia | `own: true` para bob | `test_bobs_concurrent_change_is_recorded_as_an_external_write` |
+
+Dos tests en un mutante: uno prueba la regla en su capa (política, `covers`, servicio) y el otro
+el efecto de punta a punta (agente o reporte), para que un cambio de redacción de un test no deje
+pasar el defecto. El control de versión se muta en sus dos capas a la vez (chequeo explícito y
+compare-and-set del repositorio): cada una sola es un mutante equivalente, porque la otra frena
+la escritura vieja.
+
+### Resultados históricos (no son el estado actual)
+
+Corridas sobre el código de su momento; desde 6B.7 el código cambió y la batería no se volvió a
+correr, así que no son una afirmación sobre el código actual:
+
+- 2026-11-04: 88/88 detectados (corrida completa, ~78 min, unos 53 s por mutante).
+- 2026-11-05 (antes de 6B.7): los 22 agregados después, con `-k "live: "`: 39/39 (el del
+  presupuesto de `reject-write` sobrevivió en la primera corrida y se detecta tras agregar el
+  test del peor caso).
+
+Costo esperado (sin ejecutar): P1, línea base de unos 18 s y entre 4 y 11 s por mutante sin
+mutar (unos 113 s para los 16), más la copia del repo: unos 3 a 5 minutos. Históricos con la
+lista ampliada (línea base de unos 200 s): entre 2 y 3.5 h; peor caso, unas 6 h.
 
 ## Riesgos pendientes (no cubiertos)
 

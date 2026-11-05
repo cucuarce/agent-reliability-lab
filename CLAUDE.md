@@ -22,7 +22,8 @@ Datos sintéticos. `--user` es una identidad simulada: no hay autenticación rea
 - `run_turn` exige `scope=` (`docs/scope.md`); `unrestricted_legacy_v1` es solo para la suite v1.
   Suites determinísticas: `uv run python -m arl.evals` (modelo y humano simulados).
 - Cambios en identidad, aprobación, fallos o trazas: correr
-  `uv run python scripts/mutation_check.py`.
+  `uv run python scripts/mutation_check.py` (antes, `--check-fragments`; la batería solo con
+  autorización, ver `docs/reliability.md`). Si cambia código mutado, actualizar sus fragmentos.
 - Analizar una ejecución: `/analyze-run <run_id>` (Skill de solo lectura).
 - Fuera del MVP: RAG, multiagentes, frontend, despliegue cloud, LangSmith, OpenTelemetry.
 
