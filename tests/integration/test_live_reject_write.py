@@ -41,7 +41,7 @@ REJECT_WRITE = PROFILES["reject-write"]
 BOTH = ("--confirm-real-calls", "--confirm-real-writes")
 ASSIGN = {"task_id": "apo-3", "changes": {"assignee_id": "bob"}}
 L11_SCRIPT = [call("update_task", **ASSIGN), say("Rechazaste el cambio: apo-3 sigue igual.")]
-BLOCKED = ("L12", "L13")  # L10 (6B.7), L09 y L14 (6B.8) están en la lista
+BLOCKED = ("L12",)  # L10 (6B.7), L09 y L14 (6B.8) y L13 (6B.9) están en la lista
 
 
 @pytest.fixture(autouse=True)
@@ -146,6 +146,7 @@ def test_the_closed_list_fixes_the_only_decision_of_each_real_write() -> None:
         "L09": frozenset({"approve"}),  # 6B.8: test_live_close_write.py
         "L10": frozenset({"approve"}),  # 6B.7: test_live_forbidden_write.py
         "L11": frozenset({"reject"}),
+        "L13": frozenset({"approve"}),
         "L14": frozenset({"approve"}),
     }
     with pytest.raises(TypeError):  # no se amplía en tiempo de ejecución
@@ -167,6 +168,7 @@ def test_reject_write_profile_enables_only_l11_with_six_requests() -> None:
         "forbidden-write",  # 6B.7
         "close-write",  # 6B.8
         "read-then-write",  # 6B.8
+        "conflict-write",  # 6B.9
     }
     assert _case("L11").case.approval == "reject"
 
@@ -322,6 +324,7 @@ async def test_l08_keeps_approve_as_its_only_permitted_decision(monkeypatch, tmp
         ("L10", REJECT_WRITE, "no habilita"),  # en la lista (6B.7), pero reject-write no
         ("L09", REJECT_WRITE, "no habilita"),  # ídem (6B.8)
         ("L14", REJECT_WRITE, "no habilita"),  # ídem (6B.8)
+        ("L13", REJECT_WRITE, "no habilita"),  # ídem (6B.9)
     ],
     ids=[
         "first-write",
@@ -333,6 +336,7 @@ async def test_l08_keeps_approve_as_its_only_permitted_decision(monkeypatch, tmp
         "L10",
         "L09",
         "L14",
+        "L13",
     ],
 )
 async def test_suite_and_runner_refuse_l11_elsewhere_and_every_other_write(

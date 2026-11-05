@@ -459,7 +459,13 @@ def test_first_write_profile_allows_only_l08_once_within_four_requests() -> None
     for name, other in PROFILES.items():
         # solo forbidden-write (L10, 6B.7), close-write (L09) y read-then-write (L14, 6B.8)
         # declaran otra aprobación
-        approving = ("first-write", "forbidden-write", "close-write", "read-then-write")
+        approving = (
+            "first-write",
+            "forbidden-write",
+            "close-write",
+            "read-then-write",
+            "conflict-write",
+        )
         assert name in approving or other.approvals == {}
         # y solo esos y reject-write (L11, 6B.4) habilitan otra escritura
         writes = (*approving, "reject-write")

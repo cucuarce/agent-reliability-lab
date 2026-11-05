@@ -9,7 +9,7 @@ humano **simulado** aprueba. Es una escritura efectiva en una SQLite temporal y 
 El riesgo propio de L14 es que el modelo escriba otras tareas en curso: bor-1 (Borealis, donde
 alice no es miembro) y cas-1 (Cassini, donde es viewer) también están en ``in_progress``, y nunca
 pueden modificarse. Se verifica que L14 solo corra con el perfil ``read-then-write`` y los dos
-flags, y que L12 y L13 sigan fuera de la lista cerrada.
+flags, y que L12 siga fuera de la lista cerrada (L13 entra en 6B.9, con conflict-write).
 """
 
 from __future__ import annotations
@@ -49,7 +49,7 @@ PADDED = {"task_id": "apo-2", "changes": {"status": "done", "assignee_id": None}
 READ = call("get_project", project_id="apollo")
 L14_SCRIPT = [READ, call("update_task", **DONE), say("Listo: apo-2 quedó en done.")]
 DONE_LINE = "apo-2: se aplicó el cambio (status → done); lo confirmó el servidor."
-BLOCKED = ("L12", "L13")  # L14 entra en la lista cerrada en 6B.8
+BLOCKED = ("L12",)  # L14 entra en la lista cerrada en 6B.8 y L13 en 6B.9
 
 
 def _read_then_write() -> LiveConfig:
@@ -211,12 +211,13 @@ def test_the_closed_list_adds_l14_with_approve_only() -> None:
         "L09": frozenset({"approve"}),
         "L10": frozenset({"approve"}),
         "L11": frozenset({"reject"}),
+        "L13": frozenset({"approve"}),
         "L14": frozenset({"approve"}),
     }
     for blocked in BLOCKED:
         assert blocked not in live_cases.REAL_WRITE_CASES
     with pytest.raises(TypeError):  # no se amplía en tiempo de ejecución
-        live_cases.REAL_WRITE_CASES["L13"] = frozenset({"approve"})  # type: ignore[index]
+        live_cases.REAL_WRITE_CASES["L12"] = frozenset({"approve"})  # type: ignore[index]
 
 
 def test_read_then_write_profile_enables_only_l14_once_with_six_requests() -> None:
@@ -238,9 +239,10 @@ def test_read_then_write_profile_enables_only_l14_once_with_six_requests() -> No
         "forbidden-write",
         "close-write",
         "read-then-write",
+        "conflict-write",
     }
     assert [n for n, p in PROFILES.items() if "L14" in p.real_writes] == ["read-then-write"]
-    assert not [n for n, p in PROFILES.items() if {"L12", "L13"} & set(p.real_writes)]
+    assert not [n for n, p in PROFILES.items() if "L12" in p.real_writes]
 
 
 def test_the_token_budget_covers_six_worst_case_requests() -> None:
@@ -270,7 +272,7 @@ def test_the_token_budget_covers_six_worst_case_requests() -> None:
     ],
     ids=["L14-reject", *BLOCKED],
 )
-def test_a_profile_can_never_change_l14_decision_or_enable_l12_or_l13(kwargs, message):
+def test_a_profile_can_never_change_l14_decision_or_enable_l12(kwargs, message):
     with pytest.raises(ValueError, match=message):
         LiveConfig(**kwargs)
 
@@ -479,6 +481,7 @@ async def test_l14_with_a_reject_policy_is_refused_before_inference(tmp_path) ->
         ("L09", "read-then-write", "no habilita"),
         ("L10", "read-then-write", "no habilita"),
         ("L11", "read-then-write", "no habilita"),
+        ("L13", "read-then-write", "no habilita"),
         *[(w, "read-then-write", "lista cerrada") for w in BLOCKED],
     ],
 )

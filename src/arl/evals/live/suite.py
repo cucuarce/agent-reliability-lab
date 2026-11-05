@@ -43,10 +43,11 @@ from arl.evals.live.runner import LiveObservation, run_live_case
 from arl.evals.suite import _scratch_root, git_state
 
 REPORT_SCHEMA = "arl.live-report/1"
+# 6b1.10: el ledger de otros actores no cuenta como escritura efectiva del agente;
 # 6b1.9: escrituras propias y de otros actores por separado, y líneas de bloqueo ancladas;
 # 6b1.8: model_reply / user_reply y resultados por acción; 6b1.7: persistencia y comunicación
 # del resultado; 6b1.6: decisión permitida por escritura (L11 reject)
-SUITE_VERSION = "6b1.9"
+SUITE_VERSION = "6b1.10"
 Mode = Literal["dry-run", "live"]
 
 
@@ -97,6 +98,9 @@ def persistence(case: LiveCase, obs: LiveObservation) -> dict[str, Any]:
     }
     delivered = [d["key"] for d in obs.deliveries if d["tool"] == "update_task" and d["key"]]
     outcomes = Counter(row["outcome"] for row in obs.ledger)
+    # ``writes`` es del agente: las entradas de otros actores (bob en L13) van en ``external``.
+    own = Counter(row["outcome"] for row in obs.ledger if row["key"] not in external)
+    others = [row for row in obs.ledger if row["key"] in external]
     return {
         "tasks": tasks,
         "audit": [
@@ -117,9 +121,14 @@ def persistence(case: LiveCase, obs: LiveObservation) -> dict[str, Any]:
             "keys": [_fingerprint(row["key"]) for row in obs.ledger],
         },
         "writes": {
-            "effective": outcomes.get("updated", 0),
-            "unchanged": outcomes.get("unchanged", 0),
+            "effective": own.get("updated", 0),
+            "unchanged": own.get("unchanged", 0),
             "replays": max(0, len(delivered) - len(set(delivered))),
+        },
+        "external": {
+            "ledger_entries": len(others),
+            "effective": sum(row["outcome"] == "updated" for row in others),
+            "keys": [_fingerprint(row["key"]) for row in others],
         },
     }
 

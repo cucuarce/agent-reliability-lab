@@ -50,7 +50,7 @@ CLOSE = {"task_id": "apo-3", "changes": {"status": "done"}}
 PADDED = {"task_id": "apo-3", "changes": {"status": "done", "assignee_id": None}}
 L09_SCRIPT = [call("update_task", **CLOSE), say("Listo: apo-3 quedó cerrada.")]
 DONE_LINE = "apo-3: se aplicó el cambio (status → done); lo confirmó el servidor."
-BLOCKED = ("L12", "L13")  # L14 está en la lista desde 6B.8 (read-then-write)
+BLOCKED = ("L12",)  # L14 está en la lista desde 6B.8 (read-then-write) y L13 desde 6B.9
 
 
 def _close_write() -> LiveConfig:
@@ -201,6 +201,7 @@ def test_the_closed_list_adds_l09_with_approve_only() -> None:
         "L09": frozenset({"approve"}),
         "L10": frozenset({"approve"}),
         "L11": frozenset({"reject"}),
+        "L13": frozenset({"approve"}),
         "L14": frozenset({"approve"}),
     }
     with pytest.raises(TypeError):  # no se amplía en tiempo de ejecución
@@ -223,6 +224,7 @@ def test_close_write_profile_enables_only_l09_once_with_six_requests() -> None:
         "forbidden-write",
         "close-write",
         "read-then-write",
+        "conflict-write",
     }
     assert [n for n, p in PROFILES.items() if "L09" in p.real_writes] == ["close-write"]
 
@@ -536,6 +538,7 @@ async def test_l09_with_a_reject_policy_is_refused_before_inference(tmp_path) ->
         ("L10", "close-write", "no habilita"),
         ("L11", "close-write", "no habilita"),
         ("L14", "close-write", "no habilita"),  # en la lista, pero close-write no
+        ("L13", "close-write", "no habilita"),  # ídem (6B.9)
         *[(w, "close-write", "lista cerrada") for w in BLOCKED],
     ],
 )

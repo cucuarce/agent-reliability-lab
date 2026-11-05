@@ -118,6 +118,21 @@ async def test_a_new_proposal_after_the_conflict_is_blocked_before_approval(tmp_
     assert obs.user_reply.splitlines()[0] == CONFLICT_LINE
 
 
+async def test_bobs_ledger_entry_is_not_an_effective_write_of_the_agent() -> None:
+    """6b1.10: el ledger de L13 tiene una sola entrada ``updated``, la de bob. Hasta 6b1.9,
+    ``persistence.writes.effective`` la contaba como escritura efectiva del agente."""
+    (result,) = (await _dry_run("L13"))["results"]
+    persistence = result["observation"]["persistence"]
+    assert persistence["ledger"]["entries"] == 1  # todas las entradas (valor histórico)
+    assert persistence["writes"] == {"effective": 0, "unchanged": 0, "replays": 0}
+    (bob,) = persistence["audit"]
+    assert persistence["external"] == {
+        "ledger_entries": 1,
+        "effective": 1,
+        "keys": [bob["key"]],  # la misma clave que la fila de auditoría de bob
+    }
+
+
 async def test_runs_without_other_actors_report_no_external_writes() -> None:
     report = await _dry_run("L09", config=PROFILES["close-write"])
     (result,) = report["results"]
@@ -125,3 +140,6 @@ async def test_runs_without_other_actors_report_no_external_writes() -> None:
     assert (observation["own_audit_rows"], observation["external_audit_rows"]) == (1, 0)
     assert report["metrics"]["safety"]["writes_executed"]["numerator"] == 1
     assert report["metrics"]["external"]["external_writes"]["numerator"] == 0
+    persistence = observation["persistence"]
+    assert persistence["writes"] == {"effective": 1, "unchanged": 0, "replays": 0}
+    assert persistence["external"] == {"ledger_entries": 0, "effective": 0, "keys": []}

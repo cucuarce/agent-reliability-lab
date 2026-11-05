@@ -3,7 +3,7 @@
 Una escritura con un modelo real necesita, a la vez:
 
 1. que el escenario esté en la lista cerrada del código (``cases.REAL_WRITE_CASES``), con la
-   única decisión del humano simulado que esa lista le permite (L08, L09, L10 y L14
+   única decisión del humano simulado que esa lista le permite (L08, L09, L10, L13 y L14
    ``approve``, L11 ``reject``): ni el caso ni el perfil la cambian;
 2. que el perfil la habilite (``LiveConfig.real_writes``), y que la configuración sea
    exactamente la de un perfil registrado (``PROFILES``): un ``LiveConfig`` armado a mano o
@@ -201,6 +201,22 @@ PROFILES: dict[str, LiveConfig] = {
         allowed_cases=("L14",),
         approvals={"L14": "approve"},
         real_writes=("L14",),
+    ),
+    # Conflicto de versión con un modelo real: solo L13, una corrida (alice, owner de apollo,
+    # ``apo-3.status=done``). El agente sella la acción con la versión que lee al proponer; bob
+    # (editor) cambia el título de apo-3 con la aprobación pendiente, y el servidor responde
+    # ``version_conflict``: no se aplica nada de alice. El caso no declara la decisión: la
+    # declara el perfil, y la lista cerrada solo permite ``approve``. Mismos límites que
+    # close-write.
+    "conflict-write": LiveConfig(
+        scenario_budget=Budget(max_model_calls=6, max_total_tokens=40_000, max_duration_s=240),
+        suite_budget=Budget(max_model_calls=6, max_total_tokens=40_000, max_duration_s=300),
+        max_model_turns=4,
+        max_tool_calls=4,
+        repeat=1,
+        allowed_cases=("L13",),
+        approvals={"L13": "approve"},
+        real_writes=("L13",),
     ),
 }
 

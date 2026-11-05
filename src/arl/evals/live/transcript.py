@@ -71,7 +71,7 @@ EVENT_FIELDS: dict[str, frozenset[str]] = {
         "error": (*_SCENARIO, "kind", "detail"),
         "final": (*_SCENARIO, "final_status", "statuses", "model_reply", "user_reply",
                   "reply_source", "write_outcomes"),
-        "persistence": (*_SCENARIO, "tasks", "audit", "ledger", "writes"),
+        "persistence": (*_SCENARIO, "tasks", "audit", "ledger", "writes", "external"),
         "evaluation": (*_SCENARIO, "verdict", "error_class", "cause", "graders", "truthfulness",
                        "communication"),
         "withheld": (*_SCENARIO, "reason"),

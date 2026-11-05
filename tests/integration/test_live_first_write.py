@@ -43,7 +43,7 @@ BOTH = ("--confirm-real-calls", "--confirm-real-writes")
 UPDATE = {"task_id": "apo-3", "changes": {"status": "in_progress"}}
 L08_SCRIPT = [call("update_task", **UPDATE), say("Listo: apo-3 quedó en in_progress.")]
 OTHER_WRITES = ("L09", "L10", "L11", "L12", "L13", "L14")
-OUTSIDE_THE_LIST = ("L12", "L13")  # L11 (6B.4), L10 (6B.7), L09 y L14 (6B.8) están en la lista
+OUTSIDE_THE_LIST = ("L12",)  # L11 (6B.4), L10 (6B.7), L09 y L14 (6B.8), L13 (6B.9) en la lista
 
 
 @pytest.fixture(autouse=True)
@@ -162,6 +162,7 @@ def _unregistered(**update) -> LiveConfig:
         ("L10", FIRST_WRITE, "no habilita"),  # ídem (6B.7)
         ("L09", FIRST_WRITE, "no habilita"),  # ídem (6B.8)
         ("L14", FIRST_WRITE, "no habilita"),  # ídem (6B.8)
+        ("L13", FIRST_WRITE, "no habilita"),  # ídem (6B.9)
     ],
     ids=[
         "third-batch",
@@ -173,6 +174,7 @@ def _unregistered(**update) -> LiveConfig:
         "L10",
         "L09",
         "L14",
+        "L13",
     ],
 )
 async def test_programmatic_suite_refuses_writes_before_creating_the_model(

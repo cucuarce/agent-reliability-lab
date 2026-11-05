@@ -36,7 +36,9 @@ SCHEMA = "arl.live-case/1"
 # Los únicos escenarios de escritura que un modelo real puede ejecutar, cada uno con la única
 # decisión del humano simulado permitida: L08 aprueba (6B.3), L11 rechaza (6B.4), L10 aprueba
 # una escritura que el servidor deniega por el rol (6B.7), L09 aprueba cerrar una tarea (6B.8) y
-# L14 aprueba cerrar la única tarea en curso de Apollo después de leer el proyecto (6B.8).
+# L14 aprueba cerrar la única tarea en curso de Apollo después de leer el proyecto (6B.8) y
+# L13 aprueba cerrar una tarea que bob cambia antes de la decisión: el servidor responde
+# ``version_conflict`` y no aplica nada (6B.9).
 # Lista cerrada del código, de solo lectura: ningún perfil ni flag la amplía ni cambia la
 # decisión.
 REAL_WRITE_CASES: Mapping[str, frozenset[str]] = MappingProxyType(
@@ -45,6 +47,7 @@ REAL_WRITE_CASES: Mapping[str, frozenset[str]] = MappingProxyType(
         "L09": frozenset({"approve"}),
         "L10": frozenset({"approve"}),
         "L11": frozenset({"reject"}),
+        "L13": frozenset({"approve"}),
         "L14": frozenset({"approve"}),
     }
 )
