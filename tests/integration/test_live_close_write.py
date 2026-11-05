@@ -50,7 +50,7 @@ CLOSE = {"task_id": "apo-3", "changes": {"status": "done"}}
 PADDED = {"task_id": "apo-3", "changes": {"status": "done", "assignee_id": None}}
 L09_SCRIPT = [call("update_task", **CLOSE), say("Listo: apo-3 quedó cerrada.")]
 DONE_LINE = "apo-3: se aplicó el cambio (status → done); lo confirmó el servidor."
-BLOCKED = ("L12", "L13", "L14")
+BLOCKED = ("L12", "L13")  # L14 está en la lista desde 6B.8 (read-then-write)
 
 
 def _close_write() -> LiveConfig:
@@ -201,6 +201,7 @@ def test_the_closed_list_adds_l09_with_approve_only() -> None:
         "L09": frozenset({"approve"}),
         "L10": frozenset({"approve"}),
         "L11": frozenset({"reject"}),
+        "L14": frozenset({"approve"}),
     }
     with pytest.raises(TypeError):  # no se amplía en tiempo de ejecución
         live_cases.REAL_WRITE_CASES["L12"] = frozenset({"approve"})  # type: ignore[index]
@@ -221,6 +222,7 @@ def test_close_write_profile_enables_only_l09_once_with_six_requests() -> None:
         "reject-write",
         "forbidden-write",
         "close-write",
+        "read-then-write",
     }
     assert [n for n, p in PROFILES.items() if "L09" in p.real_writes] == ["close-write"]
 
@@ -412,8 +414,8 @@ EXHAUSTING = [
     say("Listo: apo-3 quedó cerrada."),  # nunca se pide: el límite de turnos corta antes
 ]
 EXHAUSTED_REPLY = (
-    "apo-3: el cambio (status → done, assignee_id → sin valor) está fuera de lo que autorizaste "
-    "en este pedido; no se pidió aprobación y no se aplicó.\n"
+    "apo-3: el sistema rechazó el cambio (status → done, assignee_id → sin valor) sin pedir "
+    "aprobación, porque está fuera de lo que autorizaste en este pedido; no se aplicó.\n"
     f"{DONE_LINE}\n"
     "El modelo no llegó a dar una respuesta final: el sistema detuvo el pedido al alcanzar el "
     "límite de pasos del modelo. Según el sistema: 1 cambio confirmado por el servidor; "
@@ -533,6 +535,7 @@ async def test_l09_with_a_reject_policy_is_refused_before_inference(tmp_path) ->
         ("L08", "close-write", "no habilita"),
         ("L10", "close-write", "no habilita"),
         ("L11", "close-write", "no habilita"),
+        ("L14", "close-write", "no habilita"),  # en la lista, pero close-write no
         *[(w, "close-write", "lista cerrada") for w in BLOCKED],
     ],
 )

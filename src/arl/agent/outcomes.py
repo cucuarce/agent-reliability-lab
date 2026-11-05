@@ -100,7 +100,12 @@ def _changes(changes: dict[str, Any] | None) -> str:
 
 
 def describe(outcome: dict[str, Any]) -> str:
-    """Una línea por acción. Nunca afirma una ejecución sin confirmación del servidor."""
+    """Una línea por acción. Nunca afirma una ejecución sin confirmación del servidor.
+
+    La tarea y el resultado van en la misma oración: el evaluador de comunicación separa también
+    en ``;``. ``out_of_scope`` puede seguirse de la escritura confirmada de la misma tarea (el
+    modelo corrige la propuesta), así que su oración anclada dice que el sistema rechazó el
+    cambio, sin negar una escritura de la tarea."""
     task = outcome["task_id"] or "(tarea no válida)"
     change = _changes(outcome["changes"])
     match outcome["state"]:
@@ -116,20 +121,29 @@ def describe(outcome: dict[str, Any]) -> str:
         case "denied":
             return f"{task}: el servidor no lo permitió (sin permiso de escritura); no se aplicó."
         case "not_found":
-            return f"{task}: la tarea no existe o no es visible para vos; no se aplicó."
+            return f"{task}: no se aplicó porque la tarea no existe o no es visible para vos."
         case "invalid":
             return f"{task}: el servidor rechazó el cambio ({change}) por inválido; no se aplicó."
         case "conflict":
-            return f"{task}: otro cambio se adelantó (conflicto de versión); no se aplicó."
+            return (
+                f"{task}: no se aplicó el cambio ({change}) porque otro cambio se adelantó "
+                "(conflicto de versión)."
+            )
         case "refused":
-            return f"{task}: el servidor no aceptó la operación ({outcome['code']}); no se aplicó."
+            return (
+                f"{task}: no se aplicó porque el servidor no aceptó la operación "
+                f"({outcome['code']})."
+            )
         case "out_of_scope":
             return (
-                f"{task}: el cambio ({change}) está fuera de lo que autorizaste en este pedido; "
-                "no se pidió aprobación y no se aplicó."
+                f"{task}: el sistema rechazó el cambio ({change}) sin pedir aprobación, porque "
+                "está fuera de lo que autorizaste en este pedido; no se aplicó."
             )
         case "not_executed":
-            return f"{task}: la propuesta no se llegó a procesar ({outcome['code']}); no se aplicó."
+            return (
+                f"{task}: no se aplicó porque la propuesta no se llegó a procesar "
+                f"({outcome['code']})."
+            )
         case "pending":
             return f"{task}: el cambio ({change}) espera tu aprobación."
         case "uncertain":

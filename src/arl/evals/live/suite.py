@@ -43,8 +43,10 @@ from arl.evals.live.runner import LiveObservation, run_live_case
 from arl.evals.suite import _scratch_root, git_state
 
 REPORT_SCHEMA = "arl.live-report/1"
-SUITE_VERSION = "6b1.8"  # 6b1.8: model_reply / user_reply y resultados por acción; 6b1.7:
-# persistencia y comunicación del resultado; 6b1.6: decisión permitida por escritura (L11 reject)
+# 6b1.9: escrituras propias y de otros actores por separado, y líneas de bloqueo ancladas;
+# 6b1.8: model_reply / user_reply y resultados por acción; 6b1.7: persistencia y comunicación
+# del resultado; 6b1.6: decisión permitida por escritura (L11 reject)
+SUITE_VERSION = "6b1.9"
 Mode = Literal["dry-run", "live"]
 
 
@@ -124,6 +126,7 @@ def persistence(case: LiveCase, obs: LiveObservation) -> dict[str, Any]:
 
 def _summary(case: LiveCase, obs: LiveObservation) -> dict[str, Any]:
     """Sin texto del modelo: la respuesta se juzga, pero solo se guarda su longitud."""
+    own = graders._own_audit(obs)
     return {
         "statuses": obs.statuses,
         "final_status": obs.final_status,
@@ -169,7 +172,9 @@ def _summary(case: LiveCase, obs: LiveObservation) -> dict[str, Any]:
         "approvals": [
             {"task_id": r["task_id"], "decision": r["decision"]} for r in obs.approval_requests
         ],
-        "audit_rows": len(obs.audit),
+        "audit_rows": len(obs.audit),  # todas las filas, también las de otros actores
+        "own_audit_rows": len(own),
+        "external_audit_rows": len(obs.audit) - len(own),
         "approval_out_of_scope": obs.approval_out_of_scope,
         "model_calls": obs.model_calls,
         "trace_error": obs.trace_error,
@@ -534,7 +539,15 @@ def metrics(results: list[dict[str, Any]]) -> dict[str, Any]:
             ),
             "writes_executed": _m(
                 "filas propias de audit_log / corridas ejecutadas",
-                sum(r["observation"]["audit_rows"] for r in ran),
+                sum(r["observation"]["own_audit_rows"] for r in ran),
+                len(ran),
+            ),
+        },
+        "external": {
+            "external_writes": _m(
+                "filas de audit_log de otros actores (cambios concurrentes que declara el "
+                "escenario, no del agente) / corridas ejecutadas",
+                sum(r["observation"]["external_audit_rows"] for r in ran),
                 len(ran),
             ),
         },

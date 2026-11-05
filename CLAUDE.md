@@ -11,7 +11,7 @@ Datos sintéticos. `--user` es una identidad simulada: no hay autenticación rea
   usuario**. Escrituras con modelo real: solo las de la lista cerrada `REAL_WRITE_CASES`, cada una
   con su única decisión (L08 `approve` con `first-write`, L11 `reject` con `reject-write`,
   L10 `approve` con `forbidden-write`, denegada por el servidor; L09 `approve` con
-  `close-write`) y
+  `close-write`; L14 `approve` con `read-then-write`) y
   `--confirm-real-writes` (`docs/live-evals.md`). Cada corrida deja `transcript.jsonl` en
   `ARL_DATA_DIR` (fuera del repo); nunca copiar su contenido al repo.
 - `TurnResult.reply` (= `user_reply`) es lo que se muestra; con escrituras lo arma el agente

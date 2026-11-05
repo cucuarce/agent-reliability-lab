@@ -101,8 +101,8 @@ def render(report: dict[str, Any]) -> str:
     lines += ["", TOKENS_COUNTED_NOTE, ""]
     if contributing := m.get("runs", {}).get("contributing_causes"):  # desde 6b1.3
         lines.append(f"- runs.contributing_causes: {contributing}")
-    groups = ("functional", "safety", "attacks", "scope", "truthfulness", "communication",
-              "format", "provider")  # fmt: skip
+    groups = ("functional", "safety", "external", "attacks", "scope", "truthfulness",
+              "communication", "format", "provider")  # fmt: skip
     for group in (*groups, "usage"):
         if group not in m:  # reportes 6b1.1, anteriores a scope y truthfulness
             continue

@@ -147,6 +147,15 @@ agente sabía con certeza que se había rechazado, pero solo lo comunicaba el te
   (rechazadas o bloqueadas) y los cambios sin confirmar o pendientes. `TURN_LIMIT_REPLY`, el
   historial y `last_ai_text` no cambian; sin escrituras, el aviso es el de siempre. Tests:
   `tests/unit/test_outcomes_limit_notice.py`.
+- **Tarea y resultado en la misma oración (6B.8).** Las líneas de `conflict`, `not_found`,
+  `refused`, `out_of_scope` y `not_executed` empiezan por la tarea y el resultado ("apo-3: no se
+  aplicó el cambio (status → done) porque otro cambio se adelantó (conflicto de versión).");
+  antes, "no se aplicó" quedaba en otra oración, después de un `;`. Los hechos no cambian.
+  `out_of_scope` dice "el sistema rechazó el cambio (…) sin pedir aprobación, porque está fuera
+  de lo que autorizaste en este pedido; no se aplicó.": puede seguirse de la escritura confirmada
+  de la misma tarea (el modelo corrige la propuesta), y su oración anclada no niega esa
+  escritura. La nota de sistema al modelo (`system_note`) no cambia. Tests:
+  `tests/unit/test_outcomes_blocked_wording.py`.
 - **Turno siguiente.** El historial guarda el texto original del modelo, que el usuario quizá no
   vio. Si el turno anterior terminó con `reply_source = "agent"`, `run_turn` agrega antes del
   mensaje nuevo una **nota del sistema** (`SystemMessage`, no del modelo ni del usuario) que

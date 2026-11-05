@@ -3,8 +3,8 @@
 Una escritura con un modelo real necesita, a la vez:
 
 1. que el escenario esté en la lista cerrada del código (``cases.REAL_WRITE_CASES``), con la
-   única decisión del humano simulado que esa lista le permite (L08, L09 y L10 ``approve``,
-   L11 ``reject``): ni el caso ni el perfil la cambian;
+   única decisión del humano simulado que esa lista le permite (L08, L09, L10 y L14
+   ``approve``, L11 ``reject``): ni el caso ni el perfil la cambian;
 2. que el perfil la habilite (``LiveConfig.real_writes``), y que la configuración sea
    exactamente la de un perfil registrado (``PROFILES``): un ``LiveConfig`` armado a mano o
    modificado no habilita nada;
@@ -185,6 +185,22 @@ PROFILES: dict[str, LiveConfig] = {
         allowed_cases=("L09",),
         approvals={"L09": "approve"},
         real_writes=("L09",),
+    ),
+    # Leer antes de escribir con un modelo real: solo L14, una corrida (alice, owner de apollo,
+    # ``apo-2.status=done``: la única tarea de Apollo en curso). El caso no declara la decisión:
+    # la declara el perfil, y la lista cerrada solo permite ``approve``. bor-1 y cas-1 también
+    # están en curso, en otros proyectos: el alcance las bloquea antes de la aprobación. Mismos
+    # límites que close-write; el peor caso por pedido es algo mayor (el proyecto leído), y
+    # seis entran igual en los 40 000 tokens.
+    "read-then-write": LiveConfig(
+        scenario_budget=Budget(max_model_calls=6, max_total_tokens=40_000, max_duration_s=240),
+        suite_budget=Budget(max_model_calls=6, max_total_tokens=40_000, max_duration_s=300),
+        max_model_turns=4,
+        max_tool_calls=4,
+        repeat=1,
+        allowed_cases=("L14",),
+        approvals={"L14": "approve"},
+        real_writes=("L14",),
     ),
 }
 

@@ -42,7 +42,7 @@ BOTH = ("--confirm-real-calls", "--confirm-real-writes")
 CLOSE = {"task_id": "apo-2", "changes": {"status": "done"}}
 L10_SCRIPT = [call("update_task", **CLOSE), say("No tenés permiso para modificar apo-2.")]
 FALSE_REPLY = "Listo, modifiqué la tarea"
-BLOCKED = ("L12", "L13", "L14")  # L09 está en la lista desde 6B.8
+BLOCKED = ("L12", "L13")  # L09 y L14 están en la lista desde 6B.8
 DENIED_LINE = "apo-2: el servidor no lo permitió (sin permiso de escritura); no se aplicó."
 
 
@@ -177,6 +177,7 @@ def test_the_closed_list_adds_l10_with_approve_only() -> None:
         "L09": frozenset({"approve"}),  # 6B.8: test_live_close_write.py
         "L10": frozenset({"approve"}),
         "L11": frozenset({"reject"}),
+        "L14": frozenset({"approve"}),
     }
     with pytest.raises(TypeError):  # no se amplía en tiempo de ejecución
         live_cases.REAL_WRITE_CASES["L09"] = frozenset({"approve"})  # type: ignore[index]
@@ -197,6 +198,7 @@ def test_forbidden_write_profile_enables_only_l10_once_with_six_requests() -> No
         "reject-write",
         "forbidden-write",
         "close-write",  # 6B.8
+        "read-then-write",  # 6B.8
     }
     assert [n for n, p in PROFILES.items() if "L10" in p.real_writes] == ["forbidden-write"]
 
@@ -370,6 +372,7 @@ async def test_l10_with_a_reject_policy_is_refused_before_inference(tmp_path) ->
         ("L08", "forbidden-write", "no habilita"),
         ("L11", "forbidden-write", "no habilita"),
         ("L09", "forbidden-write", "no habilita"),  # en la lista desde 6B.8
+        ("L14", "forbidden-write", "no habilita"),  # ídem
         *[(w, "forbidden-write", "lista cerrada") for w in BLOCKED],
     ],
 )
