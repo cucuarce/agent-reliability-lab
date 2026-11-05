@@ -6,9 +6,10 @@ Datos sintéticos. `--user` es una identidad simulada: no hay autenticación rea
 
 ## Estado y alcance
 
-- Etapa actual: 6B.1 (Groq, ver `docs/live-evals.md`). `uv run python -m arl.evals.live dry-run`
+- Etapa actual: 6B.3 (Groq, ver `docs/live-evals.md`). `uv run python -m arl.evals.live dry-run`
   no hace inferencia. **Ninguna llamada real (`run`, `models`) sin autorización explícita del
-  usuario**; escrituras con modelo real deshabilitadas. Sin Ollama todavía.
+  usuario**. Escrituras con modelo real: solo L08 (lista cerrada `REAL_WRITE_CASES`), con el
+  perfil `first-write` y `--confirm-real-writes` (`docs/live-evals.md`). Sin Ollama todavía.
 - `GROQ_API_KEY` sale del entorno o del `.env` local (nunca se lee ni se muestra). El servidor
   MCP nunca la recibe; los tests nunca leen el `.env` real.
 - `run_turn` exige `scope=` (`docs/scope.md`); `unrestricted_legacy_v1` es solo para la suite v1.

@@ -61,6 +61,7 @@ TESTS = [
     "tests/unit/test_live_env_file.py",
     "tests/unit/test_live_truthfulness.py",
     "tests/integration/test_live_suite.py",
+    "tests/integration/test_live_first_write.py",
 ]
 _COPY_IGNORE_PATTERNS = shutil.ignore_patterns(
     ".git", ".venv", "__pycache__", ".pytest_cache", ".ruff_cache", "var", "*.db", "htmlcov"
@@ -97,6 +98,7 @@ LIVE_RUNNER = "src/arl/evals/live/runner.py"
 LIVE_GRADERS = "src/arl/evals/live/graders.py"
 LIVE_TRUTH = "src/arl/evals/live/truthfulness.py"
 LIVE_SUITE = "src/arl/evals/live/suite.py"
+LIVE_PROFILES = "src/arl/evals/live/profiles.py"
 LIVE_CLI = "src/arl/evals/live/__main__.py"
 RECORDER = "src/arl/tracing/recorder.py"
 QUERY = "src/arl/tracing/query.py"
@@ -328,10 +330,36 @@ MUTANTS = [
     Mutant("live: el servidor MCP recibe la clave del proveedor", GATEWAY,
            "        **_without_credentials(os.environ),", "        **os.environ,"),
     Mutant("live: un modelo real puede correr escenarios de escritura", LIVE_RUNNER,
-           "    if real_model and not case.writes_allowed_with_real_model and case.phase != 1:",
-           "    if False:"),
+           "    if real_model:\n        authorize_real_write(case, config)\n    policy",
+           "    policy"),
     Mutant("live: la CLI acepta escenarios de escritura", LIVE_CLI,
-           "    writes = [c.case.id for c in cases if c.case.phase != 1]", "    writes = []"),
+           "    for case in writes:  # lista cerrada, perfil que la habilita y configuración"
+           " registrada\n        authorize_real_write(case, config)\n", ""),
+    Mutant("live: la CLI no exige --confirm-real-writes", LIVE_CLI,
+           "    if writes and not args.confirm_real_writes:", "    if False:"),
+    Mutant("live: la lista cerrada no limita las escrituras reales", LIVE_PROFILES,
+           "    if case.id not in live_cases.REAL_WRITE_CASES:", "    if False:"),
+    Mutant("live: el perfil no necesita habilitar la escritura", LIVE_PROFILES,
+           "    if case.id not in config.real_writes:", "    if False:"),
+    Mutant("live: una configuración no registrada habilita escrituras", LIVE_PROFILES,
+           "    if config not in PROFILES.values():", "    if False:"),
+    Mutant("live: un perfil amplía la lista cerrada", LIVE_PROFILES,
+           "        if outside := sorted(set(self.real_writes) - live_cases.REAL_WRITE_CASES):",
+           "        if outside := []:"),
+    Mutant("live: la escritura no se vuelve a autorizar antes de despacharse", LIVE_RUNNER,
+           '                if decision == "approve" and real_model:',
+           "                if False:"),
+    Mutant("live: la aprobación simulada amplía el alcance", LIVE_RUNNER,
+           '    if not _in_scope(case, request.get("task_id"), request.get("changes")):',
+           "    if False:"),
+    Mutant("live: approval_within_scope nunca falla", LIVE_GRADERS,
+           '            not getattr(obs, "approval_out_of_scope", 0),', "            True,"),
+    Mutant("live: el runner acepta un directorio fuera del temporal", LIVE_RUNNER,
+           "    if not resolved.is_relative_to(_scratch_root()) or _is_synced_folder(resolved):",
+           "    if False:"),
+    Mutant("live: el runner acepta un directorio con datos previos", LIVE_RUNNER,
+           "    if not resolved.is_dir() or any(resolved.iterdir()):",
+           "    if not resolved.is_dir():"),
     Mutant("live: un escenario empieza sin presupuesto completo", LIVE_SUITE,
            "if remaining is None or not remaining.covers(config.scenario_budget):",
            "if remaining is None:"),
@@ -354,6 +382,17 @@ MUTANTS = [
            "        if False"),
     Mutant("live: un 429 reintentado se informa como causa contribuyente", LIVE_GRADERS,
            "    if not obs.budget_stop:\n        return []\n", ""),
+    Mutant("live: una escritura real corre sin política de aprobación explícita", LIVE_PROFILES,
+           "    elif real:\n        raise ApprovalPolicyMissing",
+           "    elif False:\n        raise ApprovalPolicyMissing"),
+    Mutant("live: se aceptan aprobaciones distintas del caso y del perfil", LIVE_PROFILES,
+           "    if len(set(declared.values())) > 1:", "    if False:"),
+    Mutant("live: un perfil declara aprobaciones de escenarios que no autoriza", LIVE_PROFILES,
+           "        extra = sorted(set(self.approvals) - set(self.allowed_cases or ()))",
+           "        extra = []"),
+    Mutant("live: el runner corre una escritura sin decisión de aprobación", LIVE_RUNNER,
+           "    policy = approval_policy(case, config, real=real_model)",
+           '    policy = {"decision": "approve", "source": "mutant", "actor": "simulated"}'),
     Mutant("live: el intento de ataque se cuenta como ejecución", LIVE_GRADERS,
            '        "executed": any(matches(a["task_id"], a["changes"]) for a in _own_audit(obs)),',
            '        "executed": bool(attempts),'),

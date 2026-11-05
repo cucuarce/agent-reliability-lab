@@ -28,7 +28,7 @@ from typing import Any
 import anyio
 
 from arl.config import ConfigError
-from arl.evals.live.cases import InvalidLiveCase, load_live_cases
+from arl.evals.live.cases import ApprovalPolicyMissing, InvalidLiveCase, load_live_cases
 from arl.evals.live.providers import (
     API_KEY_ENV,
     DEFAULT_MODEL,
@@ -39,7 +39,13 @@ from arl.evals.live.providers import (
     list_models,
     load_env_file,
 )
-from arl.evals.live.suite import PROFILES, LiveConfig, run_live_suite
+from arl.evals.live.suite import (
+    PROFILES,
+    LiveConfig,
+    WritesDisabled,
+    authorize_real_write,
+    run_live_suite,
+)
 from arl.tracing.logging_setup import LOG_LEVEL_ENV, configure_logging
 
 ALTERNATIVE_MODEL = "openai/gpt-oss-120b"
@@ -160,6 +166,7 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument("--no-write", action="store_true")
         if name == "run":
             p.add_argument("--confirm-real-calls", action="store_true")
+            p.add_argument("--confirm-real-writes", action="store_true")
     sub.add_parser("models")
     args = parser.parse_args(argv)
     for stream in (sys.stdout, sys.stderr):
@@ -189,7 +196,14 @@ def main(argv: list[str] | None = None) -> int:
             _check_real_run(args, cases, config)
         mode = "live" if args.command == "run" else "dry-run"
         report = anyio.run(lambda: run_live_suite(cases, Path.cwd(), config, mode=mode))
-    except (InvalidLiveCase, ConfigError, MissingCredential, UsageError) as exc:
+    except (
+        InvalidLiveCase,
+        ApprovalPolicyMissing,
+        WritesDisabled,
+        ConfigError,
+        MissingCredential,
+        UsageError,
+    ) as exc:
         print(f"arl.evals.live: {exc}", file=sys.stderr)
         return 2
     print(render(report))
@@ -208,9 +222,11 @@ def _check_real_run(args: argparse.Namespace, cases, config: LiveConfig) -> None
         raise UsageError("run exige --only con los escenarios autorizados")
     if not args.confirm_real_calls:
         raise UsageError("run hace inferencia real: agregá --confirm-real-calls")
-    writes = [c.case.id for c in cases if c.case.phase != 1]
-    if writes:
-        raise UsageError(f"escrituras deshabilitadas con un modelo real: {writes}")
+    writes = [c.case for c in cases if c.case.phase != 1]
+    if writes and not args.confirm_real_writes:
+        raise UsageError("escrituras con un modelo real: agregá --confirm-real-writes")
+    if args.confirm_real_writes and not writes:
+        raise UsageError("--confirm-real-writes solo se usa con escenarios de escritura")
     if config.allowed_cases is None:
         raise UsageError(f"el perfil {args.profile!r} no autoriza inferencia real")
     unauthorized = sorted(set(args.only) - set(config.allowed_cases))
@@ -218,6 +234,8 @@ def _check_real_run(args: argparse.Namespace, cases, config: LiveConfig) -> None
         raise UsageError(f"el perfil {args.profile!r} no autoriza {unauthorized}")
     if config.repeat != PROFILES[args.profile].repeat:
         raise UsageError("run no admite cambiar las repeticiones del perfil")
+    for case in writes:  # lista cerrada, perfil que la habilita y configuración registrada
+        authorize_real_write(case, config)
     if not credential_present():
         raise MissingCredential(f"{API_KEY_ENV} no está definida en el entorno")
 

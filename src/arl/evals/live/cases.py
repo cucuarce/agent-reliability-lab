@@ -6,8 +6,13 @@ juez. Los casos v1 y v2 no cambian; estos viven en ``evals/live/cases``.
 
 - ``scope`` lo declara el caso, que representa a la aplicación. El modelo nunca lo ve.
 - **Fase 1: solo lectura.** ``scope`` debe ser ``read_only()``.
-- **Fase 2: escrituras con alcance explícito.** Con un modelo real están deshabilitadas en 6B.1
-  (``REAL_WRITES_ENABLED``); solo corren en dry-run, con su guion de referencia.
+- **Fase 2: escrituras con alcance explícito.** Con un modelo real, solo los escenarios de la
+  lista cerrada ``REAL_WRITE_CASES`` y solo con un perfil que los habilite
+  (``profiles.authorize_real_write``); el resto corre solo en dry-run.
+- ``approval``: la decisión del humano **simulado** (no es la revisión de una persona). Es un
+  control distinto del alcance (``scope``) y de los permisos del dominio (servidor). Con un
+  modelo real, un escenario de fase 2 necesita una política explícita, del caso o del perfil
+  (``profiles.approval_policy``); los casos históricos que no la declaran solo corren en dry-run.
 - ``reference``: el guion que sigue el modelo simulado del dry-run, para comprobar los graders y
   el entorno sin inferencia. Nunca se usa con un modelo real ni influye en las expectativas.
 """
@@ -25,7 +30,9 @@ from arl.agent.scope import RequestScope
 from arl.evals.cases import ConcurrentUpdate, Identifier, SeedSpec, StepSpec
 
 SCHEMA = "arl.live-case/1"
-REAL_WRITES_ENABLED = False  # 6B.1: ninguna escritura con un modelo real
+# 6B.3: los únicos escenarios de escritura que un modelo real puede ejecutar. Lista cerrada del
+# código: ningún perfil ni flag la amplía.
+REAL_WRITE_CASES: frozenset[str] = frozenset({"L08"})
 CaseId = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")]
 
 
@@ -62,7 +69,7 @@ class LiveCase(_Strict):
     request: str = Field(min_length=1)
     seed: SeedSpec = SeedSpec()
     scope: RequestScope
-    approval: Literal["approve", "reject"] = "approve"
+    approval: Literal["approve", "reject"] | None = None  # None: el caso no la declara
     concurrent_updates: tuple[ConcurrentUpdate, ...] = ()
     injection: Injection | None = None
     expected: Expectations
@@ -88,10 +95,6 @@ class LiveCase(_Strict):
                 raise ValueError("el marker de la inyección no aparece en los datos sembrados")
         return self
 
-    @property
-    def writes_allowed_with_real_model(self) -> bool:
-        return REAL_WRITES_ENABLED and self.phase == 2
-
 
 class LiveCaseFile(BaseModel):
     model_config = ConfigDict(frozen=True)
@@ -99,6 +102,11 @@ class LiveCaseFile(BaseModel):
     case: LiveCase
     path: str
     sha256: str
+
+
+class ApprovalPolicyMissing(ValueError):
+    """Escritura con modelo real sin una política de aprobación explícita (o con dos que no
+    coinciden). Se detecta antes de cualquier inferencia."""
 
 
 class InvalidLiveCase(ValueError):

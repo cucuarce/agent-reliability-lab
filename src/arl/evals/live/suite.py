@@ -19,95 +19,25 @@ from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
-
 from arl import __version__
 from arl.agent.scripted_model import ScriptedChatModel, Step
-from arl.agent.state import Limits
 from arl.evals.live import graders
 from arl.evals.live.cases import SCHEMA, LiveCase, LiveCaseFile, fingerprint
-from arl.evals.live.model import Budget, CallLimits, LiveModel, Meter
-from arl.evals.live.providers import GroqSpec, make_groq_model
+from arl.evals.live.model import Budget, LiveModel, Meter
+from arl.evals.live.profiles import (  # re-exportados: la CLI y los tests los toman de acá
+    PROFILES,
+    LiveConfig,
+    WritesDisabled,
+    approval_policy,
+    authorize_real_write,
+)
+from arl.evals.live.providers import make_groq_model
 from arl.evals.live.runner import LiveObservation, run_live_case
 from arl.evals.suite import _scratch_root, git_state
 
 REPORT_SCHEMA = "arl.live-report/1"
-SUITE_VERSION = "6b1.3"  # 6b1.3: causas contribuyentes; 6b1.2: veracidad y bloqueos por alcance
+SUITE_VERSION = "6b1.5"  # 6b1.5: escrituras reales por lista cerrada; 6b1.4: aprobación explícita
 Mode = Literal["dry-run", "live"]
-
-
-class LiveConfig(BaseModel):
-    """Todo lo que define una ejecución. No contiene credenciales."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    spec: GroqSpec = GroqSpec()
-    call: CallLimits = CallLimits()
-    scenario_budget: Budget = Budget(max_model_calls=6, max_total_tokens=30_000, max_duration_s=180)
-    suite_budget: Budget = Budget(max_model_calls=14, max_total_tokens=70_000, max_duration_s=480)
-    max_model_turns: int = Field(default=4, ge=1)
-    max_tool_calls: int = Field(default=6, ge=1)
-    repeat: int = Field(default=1, ge=1, le=10)
-    # Escenarios que este perfil autoriza con inferencia real; None: ninguno (``run`` se niega).
-    allowed_cases: tuple[str, ...] | None = None
-
-    def graph_limits(self) -> Limits:
-        return Limits(
-            max_model_turns=self.max_model_turns,
-            max_tool_calls=self.max_tool_calls,
-            retry_initial_interval=0.0,
-            retry_max_interval=0.0,
-            retry_jitter=False,
-        )
-
-
-# Primera tanda con inferencia real: L01 y L02, solo lectura, una corrida cada uno, en serie y
-# con a lo sumo 8 pedidos a Groq (incluidos los reintentos). Cada escenario tiene la mitad, así
-# la admisión deja empezar el segundo aunque el primero gaste todo lo suyo.
-PROFILES: dict[str, LiveConfig] = {
-    "default": LiveConfig(),
-    "first-batch": LiveConfig(
-        scenario_budget=Budget(max_model_calls=4, max_total_tokens=24_000, max_duration_s=150),
-        suite_budget=Budget(max_model_calls=8, max_total_tokens=48_000, max_duration_s=300),
-        max_model_turns=4,
-        max_tool_calls=4,
-        repeat=1,
-        allowed_cases=("L01", "L02"),
-    ),
-    # Segunda tanda: L03-L07 (solo lectura, con dos inyecciones), una corrida cada uno, en serie,
-    # a lo sumo 20 pedidos: 4 por escenario, así la admisión deja empezar el quinto aunque los
-    # anteriores gasten todo lo suyo. La duración de la tanda deja margen para el armado de cada
-    # escenario (servidor MCP y SQLite temporal), que corre fuera de las llamadas al modelo.
-    "second-batch": LiveConfig(
-        scenario_budget=Budget(max_model_calls=4, max_total_tokens=24_000, max_duration_s=150),
-        suite_budget=Budget(max_model_calls=20, max_total_tokens=120_000, max_duration_s=900),
-        max_model_turns=4,
-        max_tool_calls=4,
-        repeat=1,
-        allowed_cases=("L03", "L04", "L05", "L06", "L07"),
-    ),
-    # Repetibilidad de las inyecciones: L05 y L06, tres corridas cada uno (L05 x3 y después
-    # L06 x3), en serie, a lo sumo 24 pedidos: 4 por corrida.
-    "injection-repeat": LiveConfig(
-        scenario_budget=Budget(max_model_calls=4, max_total_tokens=24_000, max_duration_s=150),
-        suite_budget=Budget(max_model_calls=24, max_total_tokens=144_000, max_duration_s=1080),
-        max_model_turns=4,
-        max_tool_calls=4,
-        repeat=3,
-        allowed_cases=("L05", "L06"),
-    ),
-    # Tercera tanda: L08-L11 (escritura), una corrida cada uno, en serie, a lo sumo 16 pedidos.
-    # Preparada solo para el dry-run: con un modelo real, las escrituras siguen deshabilitadas
-    # (``REAL_WRITES_ENABLED`` y la CLI), así que ``run`` se niega aunque el perfil las liste.
-    "third-batch": LiveConfig(
-        scenario_budget=Budget(max_model_calls=4, max_total_tokens=24_000, max_duration_s=150),
-        suite_budget=Budget(max_model_calls=16, max_total_tokens=96_000, max_duration_s=720),
-        max_model_turns=4,
-        max_tool_calls=4,
-        repeat=1,
-        allowed_cases=("L08", "L09", "L10", "L11"),
-    ),
-}
 
 
 def reference_model(case: LiveCase) -> ScriptedChatModel:
@@ -162,6 +92,7 @@ def _summary(obs: LiveObservation) -> dict[str, Any]:
             {"task_id": r["task_id"], "decision": r["decision"]} for r in obs.approval_requests
         ],
         "audit_rows": len(obs.audit),
+        "approval_out_of_scope": obs.approval_out_of_scope,
         "model_calls": obs.model_calls,
         "trace_error": obs.trace_error,
     }
@@ -182,6 +113,12 @@ async def run_live_suite(
     suite_meter = Meter(config.suite_budget if real else unlimited)
     results: list[dict[str, Any]] = []
     stop: str | None = None
+    # Antes de cualquier inferencia: cada escritura tiene su política de aprobación y, con un
+    # modelo real, su habilitación.
+    policies = {c.case.id: approval_policy(c.case, config, real=real) for c in cases}
+    if real:
+        for c in cases:
+            authorize_real_write(c.case, config)
     with tempfile.TemporaryDirectory(prefix="arl-live-", dir=_scratch_root()) as scratch:
         for case_file in cases:
             case = case_file.case
@@ -192,8 +129,7 @@ async def run_live_suite(
                     "phase": case.phase,
                     "path": case_file.path,
                     "case_sha256": case_file.sha256,
-                    # Humano simulado: decisión fija del caso (``approve`` si no la declara).
-                    "approval_policy": f"simulated:{case.approval}" if case.phase == 2 else None,
+                    "approval_policy": policies[case.id],
                 }
                 if stop is None:
                     remaining = suite_meter.remaining()
@@ -219,9 +155,7 @@ async def run_live_suite(
                 model = LiveModel(inner, config.call, (scenario_meter, suite_meter))
                 workdir = Path(scratch) / f"{case.id}-{rep}"
                 workdir.mkdir()
-                obs = await run_live_case(
-                    case, workdir, model, config.graph_limits(), real_model=real
-                )
+                obs = await run_live_case(case, workdir, model, config, real_model=real)
                 graded = graders.grade(case, obs)
                 if obs.provider_failure and obs.provider_failure["aborts_suite"]:
                     stop = f"provider:{obs.provider_failure['code']}"
@@ -463,3 +397,13 @@ def metrics(results: list[dict[str, Any]]) -> dict[str, Any]:
             for case, v in sorted(by_case.items())
         },
     }
+
+
+__all__ = [
+    "PROFILES",
+    "LiveConfig",
+    "WritesDisabled",
+    "approval_policy",
+    "authorize_real_write",
+    "run_live_suite",
+]
