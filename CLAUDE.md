@@ -6,10 +6,11 @@ Datos sintéticos. `--user` es una identidad simulada: no hay autenticación rea
 
 ## Estado y alcance
 
-- Etapa actual: 6B.6 (Groq, ver `docs/live-evals.md`). `uv run python -m arl.evals.live dry-run`
+- Etapa actual: 6B.7 (Groq, ver `docs/live-evals.md`). `uv run python -m arl.evals.live dry-run`
   no hace inferencia. **Ninguna llamada real (`run`, `models`) sin autorización explícita del
   usuario**. Escrituras con modelo real: solo las de la lista cerrada `REAL_WRITE_CASES`, cada una
-  con su única decisión (L08 `approve` con `first-write`, L11 `reject` con `reject-write`) y
+  con su única decisión (L08 `approve` con `first-write`, L11 `reject` con `reject-write`,
+  L10 `approve` con `forbidden-write`, denegada por el servidor) y
   `--confirm-real-writes` (`docs/live-evals.md`). Cada corrida deja `transcript.jsonl` en
   `ARL_DATA_DIR` (fuera del repo); nunca copiar su contenido al repo.
 - `TurnResult.reply` (= `user_reply`) es lo que se muestra; con escrituras lo arma el agente

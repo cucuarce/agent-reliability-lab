@@ -41,7 +41,7 @@ REJECT_WRITE = PROFILES["reject-write"]
 BOTH = ("--confirm-real-calls", "--confirm-real-writes")
 ASSIGN = {"task_id": "apo-3", "changes": {"assignee_id": "bob"}}
 L11_SCRIPT = [call("update_task", **ASSIGN), say("Rechazaste el cambio: apo-3 sigue igual.")]
-BLOCKED = ("L09", "L10", "L12", "L13", "L14")
+BLOCKED = ("L09", "L12", "L13", "L14")  # L10 está en la lista desde 6B.7
 
 
 @pytest.fixture(autouse=True)
@@ -143,6 +143,7 @@ def _no_write(obs) -> None:
 def test_the_closed_list_fixes_the_only_decision_of_each_real_write() -> None:
     assert dict(live_cases.REAL_WRITE_CASES) == {
         "L08": frozenset({"approve"}),
+        "L10": frozenset({"approve"}),  # 6B.7: test_live_forbidden_write.py
         "L11": frozenset({"reject"}),
     }
     with pytest.raises(TypeError):  # no se amplía en tiempo de ejecución
@@ -158,7 +159,11 @@ def test_reject_write_profile_enables_only_l11_with_six_requests() -> None:
     assert REJECT_WRITE.suite_budget.max_model_calls == 6
     assert (REJECT_WRITE.max_model_turns, REJECT_WRITE.max_tool_calls) == (4, 4)
     assert REJECT_WRITE.suite_budget.covers(REJECT_WRITE.scenario_budget)
-    assert {n for n, p in PROFILES.items() if p.real_writes} == {"first-write", "reject-write"}
+    assert {n for n, p in PROFILES.items() if p.real_writes} == {
+        "first-write",
+        "reject-write",
+        "forbidden-write",  # 6B.7
+    }
     assert _case("L11").case.approval == "reject"
 
 
@@ -189,10 +194,10 @@ def test_historical_profiles_are_unchanged() -> None:
             {"allowed_cases": ("L08",), "real_writes": ("L08",), "approvals": {"L08": "reject"}},
             "decisión",
         ),
-        ({"allowed_cases": ("L10",), "real_writes": ("L10",)}, "lista cerrada"),
+        ({"allowed_cases": ("L09",), "real_writes": ("L09",)}, "lista cerrada"),
         ({"allowed_cases": ("L99",), "real_writes": ("L99",)}, "lista cerrada"),
     ],
-    ids=["L11-approve", "L08-reject", "L10", "desconocido"],
+    ids=["L11-approve", "L08-reject", "L09", "desconocido"],
 )
 def test_a_profile_can_never_change_the_permitted_decision(kwargs, message) -> None:
     with pytest.raises(ValueError, match=message):
@@ -310,8 +315,17 @@ async def test_l08_keeps_approve_as_its_only_permitted_decision(monkeypatch, tmp
         ("L11", _unregistered(repeat=2), "perfil registrado"),
         ("L11", _unregistered(max_model_turns=6), "perfil registrado"),
         *[(w, REJECT_WRITE, "lista cerrada") for w in BLOCKED],
+        ("L10", REJECT_WRITE, "no habilita"),  # en la lista (6B.7), pero reject-write no
     ],
-    ids=["first-write", "third-batch", "a-mano", "otra-repeticion", "otros-turnos", *BLOCKED],
+    ids=[
+        "first-write",
+        "third-batch",
+        "a-mano",
+        "otra-repeticion",
+        "otros-turnos",
+        *BLOCKED,
+        "L10",
+    ],
 )
 async def test_suite_and_runner_refuse_l11_elsewhere_and_every_other_write(
     case_id, config, message, tmp_path

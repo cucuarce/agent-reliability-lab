@@ -43,7 +43,7 @@ BOTH = ("--confirm-real-calls", "--confirm-real-writes")
 UPDATE = {"task_id": "apo-3", "changes": {"status": "in_progress"}}
 L08_SCRIPT = [call("update_task", **UPDATE), say("Listo: apo-3 quedó en in_progress.")]
 OTHER_WRITES = ("L09", "L10", "L11", "L12", "L13", "L14")
-OUTSIDE_THE_LIST = ("L09", "L10", "L12", "L13", "L14")  # L11 está en la lista desde 6B.4
+OUTSIDE_THE_LIST = ("L09", "L12", "L13", "L14")  # L11 (6B.4) y L10 (6B.7) están en la lista
 
 
 @pytest.fixture(autouse=True)
@@ -159,8 +159,17 @@ def _unregistered(**update) -> LiveConfig:
         ("L08", _unregistered(max_tool_calls=8), "perfil registrado"),
         *[(w, FIRST_WRITE, "lista cerrada") for w in OUTSIDE_THE_LIST],
         ("L11", FIRST_WRITE, "no habilita"),  # en la lista, pero first-write no lo habilita
+        ("L10", FIRST_WRITE, "no habilita"),  # ídem (6B.7)
     ],
-    ids=["third-batch", "a-mano", "otra-repeticion", "otros-limites", *OUTSIDE_THE_LIST, "L11"],
+    ids=[
+        "third-batch",
+        "a-mano",
+        "otra-repeticion",
+        "otros-limites",
+        *OUTSIDE_THE_LIST,
+        "L11",
+        "L10",
+    ],
 )
 async def test_programmatic_suite_refuses_writes_before_creating_the_model(
     case_id, config, message
@@ -365,8 +374,8 @@ TB = ("--profile", "third-batch")
         ([*FW, "--only", "L08", "L01", *BOTH], "no autoriza ['L01']"),
         ([*FW, "--only", "L01", *BOTH], "solo se usa con escenarios de escritura"),
         *[([*FW, "--only", w, *BOTH], "no autoriza") for w in OTHER_WRITES],
-        *[([*TB, "--only", w, *BOTH], "lista cerrada") for w in ("L09", "L10")],
-        ([*TB, "--only", "L11", *BOTH], "no habilita"),
+        ([*TB, "--only", "L09", *BOTH], "lista cerrada"),
+        *[([*TB, "--only", w, *BOTH], "no habilita") for w in ("L10", "L11")],
     ],
 )
 def test_cli_refuses_real_writes_unless_every_condition_holds(argv, reason, monkeypatch, capsys):

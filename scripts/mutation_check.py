@@ -369,7 +369,9 @@ MUTANTS = [
            "REAL_WRITE_CASES: Mapping[str, frozenset[str]] = MappingProxyType(",
            "REAL_WRITE_CASES: Mapping[str, frozenset[str]] = dict("),
     Mutant("live: reject-write no admite 6 pedidos con su peor caso", LIVE_PROFILES,
+           '    "reject-write": LiveConfig(\n'
            "        scenario_budget=Budget(max_model_calls=6, max_total_tokens=40_000,",
+           '    "reject-write": LiveConfig(\n'
            "        scenario_budget=Budget(max_model_calls=6, max_total_tokens=24_000,"),
     Mutant("live: la aprobación simulada amplía el alcance", LIVE_RUNNER,
            '    if not _in_scope(case, request.get("task_id"), request.get("changes")):',

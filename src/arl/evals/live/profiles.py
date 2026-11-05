@@ -3,7 +3,7 @@
 Una escritura con un modelo real necesita, a la vez:
 
 1. que el escenario esté en la lista cerrada del código (``cases.REAL_WRITE_CASES``), con la
-   única decisión del humano simulado que esa lista le permite (L08 ``approve``, L11
+   única decisión del humano simulado que esa lista le permite (L08 y L10 ``approve``, L11
    ``reject``): ni el caso ni el perfil la cambian;
 2. que el perfil la habilite (``LiveConfig.real_writes``), y que la configuración sea
    exactamente la de un perfil registrado (``PROFILES``): un ``LiveConfig`` armado a mano o
@@ -154,6 +154,22 @@ PROFILES: dict[str, LiveConfig] = {
         repeat=1,
         allowed_cases=("L11",),
         real_writes=("L11",),
+    ),
+    # Denegación de permisos del servidor con un modelo real: solo L10, una corrida. carol es
+    # viewer de apollo: el alcance cubre la operación y el humano simulado la aprueba (el caso no
+    # declara la decisión: la declara el perfil, y la lista cerrada solo permite ``approve``),
+    # pero ``ProjectService`` la rechaza con ``Forbidden``. Mismos límites que reject-write: a lo
+    # sumo 6 pedidos (incluidos los reintentos), 4 turnos y 4 tool calls, y tokens para 6
+    # pedidos con su peor caso.
+    "forbidden-write": LiveConfig(
+        scenario_budget=Budget(max_model_calls=6, max_total_tokens=40_000, max_duration_s=240),
+        suite_budget=Budget(max_model_calls=6, max_total_tokens=40_000, max_duration_s=300),
+        max_model_turns=4,
+        max_tool_calls=4,
+        repeat=1,
+        allowed_cases=("L10",),
+        approvals={"L10": "approve"},
+        real_writes=("L10",),
     ),
 }
 

@@ -456,10 +456,11 @@ def test_first_write_profile_allows_only_l08_once_within_four_requests() -> None
     assert config.suite_budget.covers(config.scenario_budget)  # la admisión deja correr L08
     assert (config.max_model_turns, config.max_tool_calls) == (4, 4)
     assert config.real_writes == ("L08",)
-    for name, other in PROFILES.items():  # ningún otro perfil declara aprobaciones
-        assert name == "first-write" or other.approvals == {}
-        # y solo reject-write (L11, 6B.4) habilita otra escritura
-        assert name in ("first-write", "reject-write") or other.real_writes == ()
+    for name, other in PROFILES.items():
+        # solo forbidden-write (L10, 6B.7) declara otra aprobación
+        assert name in ("first-write", "forbidden-write") or other.approvals == {}
+        # y solo reject-write (L11, 6B.4) y forbidden-write (L10, 6B.7) habilitan otra escritura
+        assert name in ("first-write", "reject-write", "forbidden-write") or other.real_writes == ()
     with pytest.raises(ValueError, match="no autoriza"):  # aprobación de un caso no autorizado
         LiveConfig(allowed_cases=("L08",), approvals={"L09": "approve"})
 
