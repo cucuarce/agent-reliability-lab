@@ -192,7 +192,7 @@ barrera.
 ## Chequeo de mutaciones
 
 ```bash
-uv run python scripts/mutation_check.py            # 104 mutantes (más de una hora)
+uv run python scripts/mutation_check.py            # 110 mutantes (más de una hora)
 uv run python scripts/mutation_check.py --list     # qué regresión reintroduce cada uno
 uv run python scripts/mutation_check.py -k gateway --all-failures
 uv run python scripts/mutation_check.py --baseline-only
@@ -211,7 +211,7 @@ uv run python scripts/mutation_check.py --baseline-only
   (hash).
 - No copia secretos (`.env`, `.env.*` salvo `.env.example`, `*.pem`, `*.key`) al directorio
   temporal.
-- Resultado actual: **104/104 detectados** (34 de etapas 3–4, 13 de observabilidad e integridad de trazas, incluido el parser de D1, 9 del evaluador, 9 del alcance del turno, 2 de la identidad de tool calls (R1), 33 de la evaluación con LLM real: credencial y `.env`, cuota agotada, perfiles, presupuesto, bloqueos por alcance, causas contribuyentes, política de aprobación y habilitación de la primera escritura (lista cerrada, perfil registrado, `--confirm-real-writes`, re-autorización, alcance de la aprobación simulada y aislamiento), y 4 de la veracidad de la respuesta). Última corrida completa: 88/88 (2026-11-04, ~78 min); los 16 agregados después (causas contribuyentes, política de aprobación y habilitación de L08), con `-k "live: "`: 33/33 (2026-11-04).
+- Resultado actual: **110/110 detectados** (34 de etapas 3–4, 13 de observabilidad e integridad de trazas, incluido el parser de D1, 9 del evaluador, 9 del alcance del turno, 2 de la identidad de tool calls (R1), 39 de la evaluación con LLM real: credencial y `.env`, cuota agotada, perfiles, presupuesto, bloqueos por alcance, causas contribuyentes, política de aprobación y habilitación de la primera escritura (lista cerrada, perfil registrado, `--confirm-real-writes`, re-autorización, alcance de la aprobación simulada y aislamiento; y, desde 6B.4, la decisión permitida por escritura y el presupuesto de `reject-write`), y 4 de la veracidad de la respuesta). Última corrida completa: 88/88 (2026-11-04, ~78 min); los 22 agregados después (causas contribuyentes, política de aprobación, habilitación de L08 y decisión permitida de L11), con `-k "live: "`: 39/39 (2026-11-05; el del presupuesto de `reject-write` sobrevivió en la primera corrida y se detecta tras agregar el test del peor caso).
 
 ## Riesgos pendientes (no cubiertos)
 

@@ -99,7 +99,10 @@ async def test_approved_write_runs_only_after_approval(open_agent, conn) -> None
         done = await resume(graph, thread_id="t-w", decision=approve(request))
         tools = await _tool_messages(graph, "t-w")
 
-    assert (done.status, done.reply) == (TurnStatus.COMPLETED, "Listo.")
+    assert (done.status, done.model_reply) == (
+        TurnStatus.COMPLETED,
+        "Listo.",
+    )  # texto del LLM (6B.6)
     assert json.loads(tools[-1].content)["outcome"] == "updated"
     assert _db(conn) == (("done", 2), 1, 1)
     actor, key = conn.execute("SELECT actor_id, idempotency_key FROM audit_log").fetchone()

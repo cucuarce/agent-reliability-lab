@@ -13,20 +13,22 @@ con eventos de traza best-effort: ``run_started`` ... ``run_finished`` (ver docs
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Command
 
+from arl.agent import outcomes
 from arl.agent.gateway import ToolCallFailed
+from arl.agent.graph import TOOL_LIMIT_REPLY, TURN_LIMIT_REPLY
 from arl.agent.history import close_unanswered
 from arl.agent.locks import LockingRequired, ThreadBusy, thread_lock
 from arl.agent.redaction import LOGGER
-from arl.agent.scope import BoundScope, RequestScope, ScopeMismatch, ScopeViolation
+from arl.agent.scope import BoundScope, RequestScope, ScopeMismatch, ScopeViolation, load_bound
 from arl.agent.state import ApprovalDecision, ApprovalMismatch, PendingWrite, PrincipalMismatch
 from arl.tracing import recorder as tracing
 from arl.tracing.recorder import JsonlTraceSink, RunContext
@@ -75,6 +77,17 @@ class TurnResult:
     error: str | None = None  # código y detalle seguro del fallo que detuvo la ejecución
     pending_action: dict[str, Any] | None = None  # la escritura aprobada sin confirmar
     run_id: str | None = None  # correlaciona el resultado con sus trazas y el log
+    # Respuesta (6B.6). ``reply`` es **lo que se muestra al usuario** (igual a ``user_reply``):
+    # con escrituras en el turno la arma el agente desde ``write_outcomes``
+    # (``reply_source = "agent"``); sin escrituras es la respuesta del modelo. ``model_reply`` es
+    # solo texto del LLM (evidencia; nunca mostrarlo como resultado). ``last_ai_text`` es el
+    # valor que ``reply`` tenía antes de 6B.6 (último texto del asistente, del modelo o un aviso
+    # del agente): solo para evaluaciones comparables con las históricas.
+    model_reply: str = ""
+    user_reply: str = ""
+    reply_source: str = "model"  # model | agent
+    write_outcomes: list[dict[str, Any]] = field(default_factory=list)
+    last_ai_text: str = ""
 
 
 def thread_config(thread_id: str) -> dict[str, Any]:
@@ -250,13 +263,14 @@ async def run_turn(
                     },
                 )
             payload = {
-                "messages": [*closed, HumanMessage(text)],
+                "messages": [*closed, *_visible_note(snapshot.values), HumanMessage(text)],
                 "principal_id": principal_id,
                 # Un alcance nuevo por turno lógico, con su registro de reservas vacío. No pisa
                 # reservas abiertas: con una aprobación pendiente o una escritura incierta, el
                 # turno ya se rechazó arriba.
                 "request_scope": bound.model_dump(mode="json"),
                 "scope_ledger": {},
+                "write_outcomes": {},
             }
             return await _invoke(graph, payload, thread_id, run)
 
@@ -342,11 +356,15 @@ async def _result(graph: CompiledStateGraph, thread_id: str) -> TurnResult:
     replies = [m for m in values.get("messages", []) if isinstance(m, AIMessage)]
     reply = replies[-1].text if replies else ""
     if snapshot.interrupts:
-        return TurnResult(
-            TurnStatus.AWAITING_APPROVAL,
-            reply,
-            snapshot.interrupts[0].value,
-            values.get("approval_error"),
+        return _with_replies(
+            TurnResult(
+                TurnStatus.AWAITING_APPROVAL,
+                reply,
+                snapshot.interrupts[0].value,
+                values.get("approval_error"),
+            ),
+            values,
+            "pending",
         )
     if snapshot.next == ("execute_write",):  # la escritura aprobada no llegó a confirmarse
         pending = PendingWrite.model_validate(values["pending_write"])
@@ -355,10 +373,75 @@ async def _result(graph: CompiledStateGraph, thread_id: str) -> TurnResult:
             "idempotency_key": pending.idempotency_key,
             "tool_call_id": pending.tool_call_id,
         }
-        return TurnResult(TurnStatus.WRITE_UNCERTAIN, reply, pending_action=action)
+        uncertain = TurnResult(TurnStatus.WRITE_UNCERTAIN, reply, pending_action=action)
+        return _with_replies(uncertain, values, "uncertain")
     if snapshot.next or values.get("status") == "running":  # ejecución que no terminó
-        return TurnResult(TurnStatus.INTERRUPTED, reply)
-    return TurnResult(TurnStatus(values["status"]), reply)
+        return _with_replies(TurnResult(TurnStatus.INTERRUPTED, reply), values, None)
+    return _with_replies(TurnResult(TurnStatus(values["status"]), reply), values, None)
+
+
+_AGENT_REPLIES = frozenset({TOOL_LIMIT_REPLY, TURN_LIMIT_REPLY})
+_NOTICE_CODES = {TOOL_LIMIT_REPLY: "tool_limit", TURN_LIMIT_REPLY: "turn_limit"}
+
+
+def _with_replies(result: TurnResult, values: dict[str, Any], open_state: str | None) -> TurnResult:
+    """Separa el texto del modelo del que ve el usuario (ver ``arl.agent.outcomes``).
+
+    Los resultados salen del checkpoint: los que escribieron los nodos y, si la acción abierta
+    espera una decisión o quedó sin confirmar, uno derivado de ``pending_write``."""
+    messages = values.get("messages", [])
+    last_human = max((i for i, m in enumerate(messages) if isinstance(m, HumanMessage)), default=-1)
+    turn = [m for m in messages[last_human + 1 :] if isinstance(m, AIMessage)]
+    model = [m for m in turn if m.text not in _AGENT_REPLIES or m.tool_calls]
+    model_reply = model[-1].text if model else ""
+    notice = turn[-1].text if turn and turn[-1].text in _AGENT_REPLIES else None
+    written = sorted((values.get("write_outcomes") or {}).values(), key=lambda o: o["seq"])
+    if open_state and values.get("pending_write"):
+        pending = PendingWrite.model_validate(values["pending_write"])
+        written.append(
+            outcomes.entry(
+                len(written) + 1,
+                action_id=pending.action_id,
+                tool_call_id=pending.tool_call_id,
+                task_id=pending.task_id,
+                changes=pending.changes,
+                code="pending_approval" if open_state == "pending" else "write_uncertain",
+                state=open_state,
+                approval="approve" if open_state == "uncertain" else None,
+            )
+        )
+    user_reply, source = outcomes.compose(model_reply, written, notice)
+    return replace(
+        result,
+        reply=user_reply,
+        last_ai_text=result.reply,
+        model_reply=model_reply,
+        user_reply=user_reply,
+        reply_source=source,
+        write_outcomes=written,
+    )
+
+
+def _visible_note(values: dict[str, Any]) -> list[SystemMessage]:
+    """Si en el turno anterior el usuario vio una respuesta del agente distinta de la del
+    modelo, una nota del sistema que la resume, para que el turno nuevo parta de lo comunicado.
+
+    Es un ``SystemMessage``: no se atribuye al modelo ni al usuario, y ningún mensaje del modelo
+    se modifica. **Nunca interpola ``user_reply``** (puede llevar valores que propuso el LLM): la
+    arma ``outcomes.system_note`` con plantillas fijas desde ``write_outcomes`` y solo muestra
+    ids y valores que la aplicación declaró en el alcance. Sin escrituras ni avisos, no hay nota."""
+    if not values.get("messages"):
+        return []
+    previous = _with_replies(TurnResult(TurnStatus.COMPLETED, ""), values, None)
+    if previous.reply_source != "agent":
+        return []
+    try:
+        scope: RequestScope | None = load_bound(values.get("request_scope")).scope
+    except ScopeViolation:
+        scope = None  # sin alcance confiable: ningún id ni valor
+    replies = [m.text for m in values["messages"] if isinstance(m, AIMessage)]
+    notice = _NOTICE_CODES.get(replies[-1]) if replies else None
+    return [SystemMessage(outcomes.system_note(previous.write_outcomes, scope, notice))]
 
 
 def approve(request: dict[str, Any]) -> ApprovalDecision:

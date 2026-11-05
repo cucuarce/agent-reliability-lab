@@ -76,7 +76,10 @@ async def test_process_killed_after_commit_before_checkpoint_resumes_once(
         final = (await graph.aget_state(thread_config(THREAD))).values
         messages = final["messages"]
 
-    assert (done.status, done.reply) == (TurnStatus.COMPLETED, "Listo.")
+    assert (done.status, done.model_reply) == (
+        TurnStatus.COMPLETED,
+        "Listo.",
+    )  # texto del LLM (6B.6)
     assert [e["state"] for e in final["scope_ledger"].values()] == ["consumed"]
     assert json.loads(messages[-2].content)["replayed"] is True
     assert _domain(conn) == (("done", 2), 1, 1)  # una sola modificación y una sola auditoría

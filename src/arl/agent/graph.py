@@ -23,6 +23,7 @@ bloquea lo que queda fuera antes de pedir aprobación, ``prepare_write`` reserva
 
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 from typing import Any, Protocol, cast
@@ -35,6 +36,7 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import RetryPolicy, interrupt
 from pydantic import ValidationError
 
+from arl.agent import outcomes
 from arl.agent.gateway import McpGateway, ToolCallFailed, ToolResult, domain_code
 from arl.agent.history import check_tool_protocol, normalize_response
 from arl.agent.locks import LockingRequired
@@ -62,9 +64,13 @@ from arl.tracing import recorder as tracing
 SYSTEM_PROMPT = (
     "Sos un asistente de gestión de proyectos con datos sintéticos. La identidad del usuario la "
     "fija el sistema: nunca la pidas ni la incluyas en argumentos. Usá list_projects y "
-    "get_project para consultar. Para modificar una tarea usá update_task: un humano debe "
-    "aprobar cada cambio antes de que se ejecute. Si una tool devuelve ERROR, explicalo sin "
-    "inventar datos."
+    "get_project para consultar y update_task para proponer un cambio. La aprobación de cada "
+    "cambio la pide el sistema al usuario fuera de este chat: nunca la pidas vos ni preguntes si "
+    "confirma. Cuando update_task responde, la decisión ya se tomó: ERROR [rejected_by_user] es "
+    "un rechazo del usuario a esa propuesta (no se aplicó ni queda pendiente: no vuelvas a pedir "
+    "esa aprobación); [forbidden] es falta de permiso; [out_of_scope] es un cambio fuera de lo "
+    "que pidió el usuario; un fallo técnico no confirma nada. Solo digas que un cambio se hizo "
+    "si update_task lo confirmó. Si una tool devuelve ERROR, explicalo sin inventar datos."
 )
 TOOL_LIMIT_REPLY = "Detuve la ejecución: se alcanzó el límite de tool calls para este pedido."
 TURN_LIMIT_REPLY = "Detuve la ejecución: se alcanzó el límite de pasos del modelo para este pedido."
@@ -150,21 +156,24 @@ def build_graph(
         queue = list(state["queue"])
         used = state["tool_calls_used"]
         messages: list[BaseMessage] = []
+        written = dict(state.get("write_outcomes") or {})
         while queue:
             if used >= limits.max_tool_calls:
                 for call in queue:
                     _trace_route(call, "tool_limit")
+                    _unprepared(written, call, "tool_limit", "not_executed")
                 messages += [
                     _error_message(call, "tool_limit", "límite de tool calls alcanzado")
                     for call in queue
                 ]
                 messages.append(AIMessage(TOOL_LIMIT_REPLY))
                 return {"queue": [], "messages": messages, "tool_calls_used": used,
-                        "status": "tool_limit"}  # fmt: skip
+                        "status": "tool_limit", "write_outcomes": written}  # fmt: skip
             try:
                 spec, args = validate_call(queue[0]["name"], queue[0]["args"])
             except InvalidToolCall as exc:
                 _trace_route(queue[0], "invalid_tool_call")
+                _unprepared(written, queue[0], "invalid_tool_call", "not_executed")
                 messages.append(_error_message(queue.pop(0), "invalid_tool_call", str(exc)))
                 used += 1
                 continue
@@ -174,6 +183,8 @@ def build_graph(
                     bound.check(write.task_id, write.changes.changes(), ledger)
                 except OutOfScope as exc:
                     _trace_route(queue[0], "out_of_scope", args, scope_reason=exc.reason)
+                    _unprepared(written, queue[0], "out_of_scope", "out_of_scope",
+                                write.task_id, write.changes.changes())  # fmt: skip
                     messages.append(_error_message(queue.pop(0), "out_of_scope",
                                                    f"({exc.reason}) {exc}"))  # fmt: skip
                     used += 1
@@ -181,7 +192,8 @@ def build_graph(
             decision = "execute" if spec.kind is ToolKind.READ else "requires_approval"
             _trace_route(queue[0], decision, args)
             break
-        return {"queue": queue, "messages": messages, "tool_calls_used": used}
+        return {"queue": queue, "messages": messages, "tool_calls_used": used,
+                "write_outcomes": written}  # fmt: skip
 
     def await_approval(state: AgentState) -> dict[str, Any]:
         """Solo interrupt(): se re-ejecuta al reanudar, por eso no tiene efectos previos.
@@ -222,15 +234,18 @@ def build_graph(
         decision = ApprovalDecision.model_validate(state["approval"])
         reason = decision.reason or "sin motivo"
         ledger = _settle(state, pending, "released")  # nunca se envió: el permiso vuelve
+        written = _settled(state, pending, "rejected_by_user", "rejected", "reject")
+        result = json.dumps(outcomes.public(written[pending.action_id]), ensure_ascii=False)
         message = ToolMessage(
             f"ERROR [rejected_by_user] el usuario rechazó la modificación de "
-            f"'{pending.task_id}'. Motivo: {reason}",
+            f"'{pending.task_id}' y la decisión ya está tomada: no se aplicó ni queda pendiente; "
+            f"no vuelvas a pedir esta aprobación. Motivo: {reason}. Resultado: {result}",
             tool_call_id=pending.tool_call_id,
             name=pending.tool,
             status="error",
         )
         return {"messages": [message], "pending_write": None, "approval": None,
-                "scope_ledger": ledger}  # fmt: skip
+                "scope_ledger": ledger, "write_outcomes": written}  # fmt: skip
 
     # --- Nodos con efectos (lecturas MCP o la única escritura) -----------------------------------
 
@@ -296,7 +311,11 @@ def build_graph(
             located = await _locate_task(gateway, args.task_id)
         if located is None:
             detail = f"tarea '{args.task_id}' no encontrada"
-            return update | {"messages": [_error_message(call, "not_found", detail)]}
+            written = dict(state.get("write_outcomes") or {})
+            _unprepared(written, call, "not_found", "not_found", args.task_id,
+                        args.changes.changes())  # fmt: skip
+            return update | {"messages": [_error_message(call, "not_found", detail)],
+                             "write_outcomes": written}  # fmt: skip
         project_id, my_role, task = located
 
         changes = args.changes.changes()
@@ -307,8 +326,11 @@ def build_graph(
             grant_id = bound_scope(state, config).check(args.task_id, changes, ledger)
         except OutOfScope as exc:
             _trace_route(call, "out_of_scope", args, scope_reason=exc.reason)
+            written = dict(state.get("write_outcomes") or {})
+            _unprepared(written, call, "out_of_scope", "out_of_scope", args.task_id, changes)
             return update | {"messages": [_error_message(call, "out_of_scope",
-                                                         f"({exc.reason}) {exc}")]}  # fmt: skip
+                                                         f"({exc.reason}) {exc}")],
+                             "write_outcomes": written}  # fmt: skip
         pending = PendingWrite.seal(
             action_id=action_id,
             tool_call_id=call["id"],
@@ -363,9 +385,18 @@ def build_graph(
             if result.is_error or result.data is None
             else result.data["outcome"]
         )
+        replayed = bool(not result.is_error and result.data and result.data.get("replayed"))
         return {
             "messages": [_tool_message(pending.tool_call_id, pending.tool, result)],
             "scope_ledger": _settle(state, pending, settle_state(outcome)),
+            "write_outcomes": _settled(
+                state,
+                pending,
+                outcome or "unknown",
+                outcomes.server_state(outcome),
+                "approve",
+                replayed=replayed,
+            ),
             "pending_write": None,
             "approval": None,
         }
@@ -429,6 +460,55 @@ def build_graph(
                 "trace_dir": str(trace_dir) if trace_dir else None,
             },
         }
+    )
+
+
+def _settled(
+    state: AgentState,
+    pending: PendingWrite,
+    code: str,
+    outcome_state: str,
+    approval: str,
+    *,
+    replayed: bool = False,
+) -> dict[str, dict[str, Any]]:
+    """El resultado de una acción preparada: decisión validada o respuesta del servidor."""
+    written = dict(state.get("write_outcomes") or {})
+    previous = written.get(pending.action_id)
+    written[pending.action_id] = outcomes.entry(
+        previous["seq"] if previous else len(written) + 1,
+        action_id=pending.action_id,
+        tool_call_id=pending.tool_call_id,
+        task_id=pending.task_id,
+        changes=pending.changes,
+        code=code,
+        state=outcome_state,
+        approval=approval,
+        replayed=replayed,
+    )
+    return written
+
+
+def _unprepared(
+    written: dict[str, dict[str, Any]],
+    call: dict[str, Any],
+    code: str,
+    outcome_state: str,
+    task_id: Any = None,
+    changes: Any = None,
+) -> None:
+    """Una escritura que nunca llegó a prepararse: sin action_id ni aprobación."""
+    if call.get("name") != "update_task":
+        return
+    args = call.get("args") if isinstance(call.get("args"), dict) else {}
+    written[f"call:{call['id']}"] = outcomes.entry(
+        len(written) + 1,
+        action_id=None,
+        tool_call_id=call["id"],
+        task_id=task_id if task_id is not None else args.get("task_id"),
+        changes=changes if changes is not None else args.get("changes"),
+        code=code,
+        state=outcome_state,
     )
 
 

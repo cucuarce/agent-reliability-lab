@@ -62,6 +62,7 @@ TESTS = [
     "tests/unit/test_live_truthfulness.py",
     "tests/integration/test_live_suite.py",
     "tests/integration/test_live_first_write.py",
+    "tests/integration/test_live_reject_write.py",
 ]
 _COPY_IGNORE_PATTERNS = shutil.ignore_patterns(
     ".git", ".venv", "__pycache__", ".pytest_cache", ".ruff_cache", "var", "*.db", "htmlcov"
@@ -99,6 +100,7 @@ LIVE_GRADERS = "src/arl/evals/live/graders.py"
 LIVE_TRUTH = "src/arl/evals/live/truthfulness.py"
 LIVE_SUITE = "src/arl/evals/live/suite.py"
 LIVE_PROFILES = "src/arl/evals/live/profiles.py"
+LIVE_CASES = "src/arl/evals/live/cases.py"
 LIVE_CLI = "src/arl/evals/live/__main__.py"
 RECORDER = "src/arl/tracing/recorder.py"
 QUERY = "src/arl/tracing/query.py"
@@ -344,11 +346,31 @@ MUTANTS = [
     Mutant("live: una configuración no registrada habilita escrituras", LIVE_PROFILES,
            "    if config not in PROFILES.values():", "    if False:"),
     Mutant("live: un perfil amplía la lista cerrada", LIVE_PROFILES,
-           "        if outside := sorted(set(self.real_writes) - live_cases.REAL_WRITE_CASES):",
+           "        if outside := sorted(set(self.real_writes)"
+           " - set(live_cases.REAL_WRITE_CASES)):",
            "        if outside := []:"),
     Mutant("live: la escritura no se vuelve a autorizar antes de despacharse", LIVE_RUNNER,
-           '                if decision == "approve" and real_model:',
-           "                if False:"),
+           "                if real_model:  # otra vez, antes de despachar la decisión",
+           "                if False:  # otra vez, antes de despachar la decisión"),
+    Mutant("live: el rechazo se despacha sin volver a autorizar", LIVE_RUNNER,
+           "                if real_model:  # otra vez, antes de despachar la decisión",
+           '                if decision == "approve" and real_model:  # otra vez'),
+    Mutant("live: la autorización no verifica la decisión permitida", LIVE_PROFILES,
+           '    if policy is None or policy["decision"] not in'
+           " live_cases.REAL_WRITE_CASES[case.id]:",
+           "    if policy is None:"),
+    Mutant("live: un perfil cambia la decisión permitida", LIVE_PROFILES,
+           "            if decision is not None and decision not in"
+           " live_cases.REAL_WRITE_CASES[case_id]:",
+           "            if False:"),
+    Mutant("live: L11 también puede aprobar", LIVE_CASES,
+           '"L11": frozenset({"reject"})', '"L11": frozenset({"approve", "reject"})'),
+    Mutant("live: la lista cerrada se puede modificar en ejecución", LIVE_CASES,
+           "REAL_WRITE_CASES: Mapping[str, frozenset[str]] = MappingProxyType(",
+           "REAL_WRITE_CASES: Mapping[str, frozenset[str]] = dict("),
+    Mutant("live: reject-write no admite 6 pedidos con su peor caso", LIVE_PROFILES,
+           "        scenario_budget=Budget(max_model_calls=6, max_total_tokens=40_000,",
+           "        scenario_budget=Budget(max_model_calls=6, max_total_tokens=24_000,"),
     Mutant("live: la aprobación simulada amplía el alcance", LIVE_RUNNER,
            '    if not _in_scope(case, request.get("task_id"), request.get("changes")):',
            "    if False:"),

@@ -5,8 +5,13 @@ sembrada, checkpoints, locks y trazas propios, y el servidor MCP y el agente rea
 distinto es el modelo (``LiveModel``) y que el humano simulado decide según el caso.
 
 Con un modelo real, una escritura se autoriza al empezar el escenario y otra vez justo antes de
-aprobarla (``profiles.authorize_real_write``). El humano simulado nunca aprueba una acción que el
-alcance del caso no cubre, y el directorio de trabajo tiene que ser uno temporal, nuevo y vacío.
+despachar cada decisión, aprobar o rechazar (``profiles.authorize_real_write``). El humano
+simulado nunca aprueba una acción que el alcance del caso no cubre, y el directorio de trabajo
+tiene que ser uno temporal, nuevo y vacío.
+
+Para la transcripción (``transcript``) guarda la conversación visible del thread y comprueba que
+la base tenga exactamente las tareas y los usuarios de la semilla empaquetada
+(``synthetic_verified``): si no, la suite no escribe el contenido del escenario.
 """
 
 from __future__ import annotations
@@ -17,8 +22,17 @@ from pathlib import Path
 from typing import Any
 
 from arl.agent.faults import FaultPlan
-from arl.agent.runtime import TurnStatus, approve, continue_after_failure, reject, resume, run_turn
+from arl.agent.runtime import (
+    TurnStatus,
+    approve,
+    continue_after_failure,
+    reject,
+    resume,
+    run_turn,
+    thread_config,
+)
 from arl.config import ConfigError, _is_synced_folder
+from arl.evals.live import transcript
 from arl.evals.live.cases import LiveCase
 from arl.evals.live.graders import _in_scope
 from arl.evals.live.model import BudgetExceeded, LiveModel
@@ -46,7 +60,7 @@ from arl.evals.runner import (
 )
 from arl.evals.suite import _scratch_root
 from arl.storage.db import connect
-from arl.storage.seed import create_database
+from arl.storage.seed import create_database, load_seed
 from arl.tracing.query import TraceNotFound, report_for
 
 __all__ = ["IsolationError", "LiveObservation", "WritesDisabled", "run_live_case"]
@@ -66,6 +80,24 @@ class LiveObservation(Observation):
     budget_stop: str | None = None
     infra_error: str | None = None
     approval_out_of_scope: int = 0  # pedidos de aprobación que el alcance del caso no cubre
+    conversation: list[dict[str, Any]] = field(default_factory=list)  # visible (``transcript``)
+    synthetic_verified: bool = False  # la base tiene exactamente la semilla empaquetada
+    # 6B.6: ``reply`` es el valor histórico (``TurnResult.last_ai_text``), el que leen los
+    # graders históricos; ``model_reply`` solo texto del LLM; ``user_reply`` lo que ve el
+    # usuario (``TurnResult.reply``) y ``reply_source`` quién lo escribió.
+    model_reply: str = ""
+    user_reply: str = ""
+    reply_source: str = "model"
+    write_outcomes: list[dict[str, Any]] = field(default_factory=list)
+
+
+def _synthetic(obs: LiveObservation) -> bool:
+    """Las tareas y los usuarios de la base son exactamente los de la semilla sintética."""
+    data = load_seed()
+    users = {user for members in obs.memberships.values() for user in members}
+    return set(obs.tasks_before) == {t.id for t in data.tasks} and users <= {
+        u.id for u in data.users
+    }
 
 
 def _check_isolated(workdir: Path) -> None:
@@ -99,6 +131,7 @@ async def run_live_case(
         with closing(connect(env.db)) as conn:
             obs.tasks_before = _tasks(conn)
             obs.memberships = _memberships(conn)
+        obs.synthetic_verified = _synthetic(obs)
         async with AsyncExitStack() as stack:
             try:
                 graph, faulty = await _open_agent(
@@ -111,6 +144,8 @@ async def run_live_case(
             except WritesDisabled as exc:  # se cierra el agente y después se informa
                 revoked = exc
             await _collect_conversation(graph, obs.thread_id, obs)
+            state = await graph.aget_state(thread_config(obs.thread_id))
+            obs.conversation = transcript.conversation(state.values.get("messages", []))
             obs.deliveries = [
                 {"tool": name, "task_id": args.get("task_id"), "key": args.get("idempotency_key")}
                 for name, args in faulty.delivered
@@ -159,13 +194,17 @@ async def _flow(
         result = await run_turn(graph, thread_id=obs.thread_id, text=case.request, scope=case.scope)
         for _ in range(MAX_OPERATIONS):
             obs.statuses.append(result.status.value)
-            obs.reply = result.reply or ""
+            obs.reply = result.last_ai_text or ""
+            obs.model_reply = result.model_reply
+            obs.user_reply = result.user_reply
+            obs.reply_source = result.reply_source
+            obs.write_outcomes = list(result.write_outcomes)
             if result.status is TurnStatus.AWAITING_APPROVAL:
                 request = result.approval_request or {}
                 _apply_concurrent(case, env, decisions, obs)  # type: ignore[arg-type]
                 decision = _simulated_decision(case, policy, request, obs)
-                if decision == "approve" and real_model:
-                    authorize_real_write(case, config)  # otra vez, antes de despachar la escritura
+                if real_model:  # otra vez, antes de despachar la decisión (aprobar o rechazar)
+                    authorize_real_write(case, config)
                 await _record_request(graph, result, decision, obs)
                 choice = approve(request) if decision == "approve" else reject(request, "eval")
                 result = await resume(graph, thread_id=obs.thread_id, decision=choice)

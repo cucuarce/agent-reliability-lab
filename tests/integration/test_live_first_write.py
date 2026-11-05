@@ -43,6 +43,7 @@ BOTH = ("--confirm-real-calls", "--confirm-real-writes")
 UPDATE = {"task_id": "apo-3", "changes": {"status": "in_progress"}}
 L08_SCRIPT = [call("update_task", **UPDATE), say("Listo: apo-3 quedó en in_progress.")]
 OTHER_WRITES = ("L09", "L10", "L11", "L12", "L13", "L14")
+OUTSIDE_THE_LIST = ("L09", "L10", "L12", "L13", "L14")  # L11 está en la lista desde 6B.4
 
 
 @pytest.fixture(autouse=True)
@@ -97,10 +98,11 @@ def _audit_rows(workdir: Path) -> list:
 # --- Lista cerrada, perfil y configuración -----------------------------------------------------
 
 
-def test_only_l08_is_in_the_closed_list_and_only_first_write_enables_it() -> None:
-    assert frozenset({"L08"}) == live_cases.REAL_WRITE_CASES
+def test_only_first_write_enables_l08_and_only_to_approve() -> None:
+    # 6B.4 agregó L11 (solo reject, perfil reject-write): test_live_reject_write.py
+    assert live_cases.REAL_WRITE_CASES["L08"] == frozenset({"approve"})
     assert FIRST_WRITE.real_writes == ("L08",)
-    assert {n for n, p in PROFILES.items() if p.real_writes} == {"first-write"}
+    assert [n for n, p in PROFILES.items() if "L08" in p.real_writes] == ["first-write"]
 
 
 @pytest.mark.parametrize(
@@ -155,9 +157,10 @@ def _unregistered(**update) -> LiveConfig:
         ("L08", LiveConfig(allowed_cases=("L08",), approvals={"L08": "approve"}), "no habilita"),
         ("L08", _unregistered(repeat=2), "perfil registrado"),
         ("L08", _unregistered(max_tool_calls=8), "perfil registrado"),
-        *[(w, FIRST_WRITE, "lista cerrada") for w in OTHER_WRITES],
+        *[(w, FIRST_WRITE, "lista cerrada") for w in OUTSIDE_THE_LIST],
+        ("L11", FIRST_WRITE, "no habilita"),  # en la lista, pero first-write no lo habilita
     ],
-    ids=["third-batch", "a-mano", "otra-repeticion", "otros-limites", *OTHER_WRITES],
+    ids=["third-batch", "a-mano", "otra-repeticion", "otros-limites", *OUTSIDE_THE_LIST, "L11"],
 )
 async def test_programmatic_suite_refuses_writes_before_creating_the_model(
     case_id, config, message
@@ -362,7 +365,8 @@ TB = ("--profile", "third-batch")
         ([*FW, "--only", "L08", "L01", *BOTH], "no autoriza ['L01']"),
         ([*FW, "--only", "L01", *BOTH], "solo se usa con escenarios de escritura"),
         *[([*FW, "--only", w, *BOTH], "no autoriza") for w in OTHER_WRITES],
-        *[([*TB, "--only", w, *BOTH], "lista cerrada") for w in ("L09", "L10", "L11")],
+        *[([*TB, "--only", w, *BOTH], "lista cerrada") for w in ("L09", "L10")],
+        ([*TB, "--only", "L11", *BOTH], "no habilita"),
     ],
 )
 def test_cli_refuses_real_writes_unless_every_condition_holds(argv, reason, monkeypatch, capsys):

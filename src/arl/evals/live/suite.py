@@ -6,10 +6,16 @@
 - **live**: ``ChatGroq``. Antes de cada corrida, lo que queda del presupuesto de la suite debe
   cubrir el presupuesto completo de un escenario; si no, no se empieza ninguna más. Un error de
   cuenta o de modelo (401, 403, 404) detiene la suite.
+
+Cada resultado lleva la evidencia de persistencia leída de SQLite (``persistence``: estado y
+versión de las tareas relevantes, filas de ``audit_log``, ledger de idempotencia, escrituras
+efectivas, sin cambios y reenvíos), con huellas en lugar de claves completas. Con un
+``TranscriptWriter``, cada escenario deja además sus eventos en la transcripción local.
 """
 
 from __future__ import annotations
 
+import hashlib
 import statistics
 import tempfile
 from collections import Counter
@@ -20,8 +26,9 @@ from pathlib import Path
 from typing import Any, Literal
 
 from arl import __version__
+from arl.agent.faults import FaultPlan
 from arl.agent.scripted_model import ScriptedChatModel, Step
-from arl.evals.live import graders
+from arl.evals.live import graders, transcript
 from arl.evals.live.cases import SCHEMA, LiveCase, LiveCaseFile, fingerprint
 from arl.evals.live.model import Budget, LiveModel, Meter
 from arl.evals.live.profiles import (  # re-exportados: la CLI y los tests los toman de acá
@@ -36,7 +43,8 @@ from arl.evals.live.runner import LiveObservation, run_live_case
 from arl.evals.suite import _scratch_root, git_state
 
 REPORT_SCHEMA = "arl.live-report/1"
-SUITE_VERSION = "6b1.5"  # 6b1.5: escrituras reales por lista cerrada; 6b1.4: aprobación explícita
+SUITE_VERSION = "6b1.8"  # 6b1.8: model_reply / user_reply y resultados por acción; 6b1.7:
+# persistencia y comunicación del resultado; 6b1.6: decisión permitida por escritura (L11 reject)
 Mode = Literal["dry-run", "live"]
 
 
@@ -60,7 +68,61 @@ def _sdk_versions() -> dict[str, str | None]:
     return result
 
 
-def _summary(obs: LiveObservation) -> dict[str, Any]:
+TASK_FIELDS = ("status", "assignee_id", "version")
+SAFE_VALUES = ("status", "assignee_id")  # valores enumerados o ids sintéticos; nunca texto libre
+
+
+def _fingerprint(key: str | None) -> str | None:
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()[:12] if key else None
+
+
+def persistence(case: LiveCase, obs: LiveObservation) -> dict[str, Any]:
+    """Lo que quedó en SQLite: la fuente de verdad, no las trazas."""
+    external = set(obs.external_keys)
+    changed = {t for t, after in obs.tasks_after.items() if obs.tasks_before.get(t) != after}
+    relevant = (
+        {t for grant in case.scope.grants for t in grant.task_ids}
+        | {c["task_id"] for c in obs.model_tool_calls if c["tool"] == "update_task"}
+        | {a["task_id"] for a in obs.audit}
+        | changed
+    )
+    tasks = {
+        t: {
+            when: {f: (rows.get(t) or {}).get(f) for f in TASK_FIELDS}
+            for when, rows in (("before", obs.tasks_before), ("after", obs.tasks_after))
+        }
+        for t in sorted(x for x in relevant if isinstance(x, str))
+    }
+    delivered = [d["key"] for d in obs.deliveries if d["tool"] == "update_task" and d["key"]]
+    outcomes = Counter(row["outcome"] for row in obs.ledger)
+    return {
+        "tasks": tasks,
+        "audit": [
+            {
+                "actor_id": a["actor_id"],
+                "task_id": a["task_id"],
+                "project_id": a["project_id"],
+                "own": a["idempotency_key"] not in external,
+                "changed_fields": sorted(a["changes"]),
+                "changes": {f: v for f, v in a["changes"].items() if f in SAFE_VALUES},
+                "key": _fingerprint(a["idempotency_key"]),
+            }
+            for a in obs.audit
+        ],
+        "ledger": {
+            "entries": len(obs.ledger),
+            "outcomes": dict(sorted(outcomes.items())),
+            "keys": [_fingerprint(row["key"]) for row in obs.ledger],
+        },
+        "writes": {
+            "effective": outcomes.get("updated", 0),
+            "unchanged": outcomes.get("unchanged", 0),
+            "replays": max(0, len(delivered) - len(set(delivered))),
+        },
+    }
+
+
+def _summary(case: LiveCase, obs: LiveObservation) -> dict[str, Any]:
     """Sin texto del modelo: la respuesta se juzga, pero solo se guarda su longitud."""
     return {
         "statuses": obs.statuses,
@@ -69,7 +131,23 @@ def _summary(obs: LiveObservation) -> dict[str, Any]:
         "provider_failure": obs.provider_failure,
         "budget_stop": obs.budget_stop,
         "infra_error": obs.infra_error,
-        "reply_chars": len(obs.reply),
+        "reply_chars": len(obs.reply),  # histórico: TurnResult.last_ai_text
+        "model_reply_chars": len(obs.model_reply),
+        "user_reply_chars": len(obs.user_reply),
+        "reply_source": obs.reply_source,
+        "write_outcomes": [
+            {
+                "action_id": o["action_id"],
+                "task_id": o["task_id"],
+                "changed_fields": sorted(o["changes"] or {}),
+                "code": o["code"],
+                "state": o["state"],
+                "executed": o["executed"],
+                "approval": o["approval"],
+                "replayed": o["replayed"],
+            }
+            for o in obs.write_outcomes
+        ],
         "tool_calls": [
             {
                 "tool": c["tool"],
@@ -95,7 +173,120 @@ def _summary(obs: LiveObservation) -> dict[str, Any]:
         "approval_out_of_scope": obs.approval_out_of_scope,
         "model_calls": obs.model_calls,
         "trace_error": obs.trace_error,
+        "persistence": persistence(case, obs),
     }
+
+
+def _scenario_events(
+    case: LiveCase,
+    rep: int,
+    obs: LiveObservation,
+    policy: dict[str, Any] | None,
+    result: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Los eventos de la transcripción de un escenario, en el orden en que ocurrieron."""
+    ids = {"case_id": case.id, "repetition": rep}
+    if not obs.synthetic_verified:
+        return [{"event": "withheld", **ids, "reason": "synthetic_unverified"}]
+    calls = transcript.model_calls(obs.model_calls)
+    by_turn: dict[int, list[dict[str, Any]]] = {}
+    for c in calls:
+        by_turn.setdefault(c["turn"], []).append(c)
+    approval_for: dict[str, dict[str, Any]] = {}
+    pending = list(enumerate(obs.approval_requests))
+    for e in obs.conversation:  # cada pedido de aprobación, con la propuesta que lo originó
+        for call in e.get("tool_calls", ()) if e["event"] == "model_response" else ():
+            if call["name"] != "update_task":
+                continue
+            for k, (index, request) in enumerate(pending):
+                if request["task_id"] == call["args"].get("task_id"):
+                    approval_for[call["id"]] = {"index": index, **request}
+                    del pending[k]
+                    break
+    blocked = {e["tool_call_id"]: e for e in obs.tool_errors if e["code"] == "out_of_scope"}
+
+    def approval(call_id: str | None, request: dict[str, Any]) -> dict[str, Any]:
+        guarded = policy is not None and request["decision"] != policy["decision"]
+        return {
+            "event": "approval",
+            **ids,
+            "index": request["index"],
+            "task_id": request["task_id"],
+            "tool_call_id": call_id,
+            "changes": request["changes"],
+            "decision": request["decision"],
+            "source": "scope_guard" if guarded else (policy or {}).get("source"),
+            "actor": "simulated",
+        }
+
+    events: list[dict[str, Any]] = [
+        {
+            "event": "scenario_start",
+            **ids,
+            "phase": case.phase,
+            "thread_id": obs.thread_id,
+            "principal": case.principal,
+            "scope": case.scope.model_dump(mode="json"),
+            "approval_policy": policy,
+            "synthetic": True,
+        }
+    ]
+    emitted_turns: set[int] = set()
+    for e in obs.conversation:
+        if e["event"] == "model_response" and e["origin"] == "model":
+            events += [c | ids for c in by_turn.get(e["turn"], [])]
+            emitted_turns.add(e["turn"])
+        if e["event"] == "tool_result" and e["tool_call_id"] in approval_for:
+            events.append(approval(e["tool_call_id"], approval_for.pop(e["tool_call_id"])))
+        events.append(e | ids)
+        if e["event"] == "tool_result" and (b := blocked.get(e["tool_call_id"])):
+            events.append(
+                {
+                    "event": "scope_block",
+                    **ids,
+                    "tool_call_id": b["tool_call_id"],
+                    "tool": b["tool"],
+                    "task_id": b["task_id"],
+                    "reason": b["scope_reason"],
+                }
+            )
+    events += [c | ids for c in calls if c["turn"] not in emitted_turns]  # sin respuesta
+    events += [approval(call_id, r) for call_id, r in approval_for.items()]
+    events += [approval(None, {"index": i, **r}) for i, r in pending]
+    for kind, detail in (
+        ("provider_failure", obs.provider_failure),
+        ("budget_stop", obs.budget_stop),
+        ("raised", obs.raised),
+        ("infra_error", obs.infra_error),
+    ):
+        if detail:
+            events.append({"event": "error", **ids, "kind": kind, "detail": detail})
+    events.append(
+        {
+            "event": "final",
+            **ids,
+            "final_status": obs.final_status,
+            "statuses": obs.statuses,
+            "model_reply": obs.model_reply,
+            "user_reply": obs.user_reply,
+            "reply_source": obs.reply_source,
+            "write_outcomes": obs.write_outcomes,
+        }
+    )
+    events.append({"event": "persistence", **ids, **result["observation"]["persistence"]})
+    events.append(
+        {
+            "event": "evaluation",
+            **ids,
+            "verdict": result["verdict"],
+            "error_class": result["error_class"],
+            "cause": result["cause"],
+            "graders": result["graders"],
+            "truthfulness": result["truthfulness"],
+            "communication": result["communication"],
+        }
+    )
+    return events
 
 
 async def run_live_suite(
@@ -105,8 +296,11 @@ async def run_live_suite(
     *,
     mode: Mode,
     chat_factory: Callable[[LiveConfig], Any] | None = None,
+    transcript: transcript.TranscriptWriter | None = None,
+    faults: FaultPlan | None = None,
 ) -> dict[str, Any]:
-    """``chat_factory`` (solo tests): reemplaza a ``ChatGroq`` en el modo live."""
+    """``chat_factory`` y ``faults`` (solo tests): reemplazan a ``ChatGroq`` en el modo live e
+    inyectan fallos del MCP. ``transcript``: dónde dejar los eventos de cada escenario."""
     started = datetime.now(UTC)
     real = mode == "live"
     unlimited = Budget(max_model_calls=10**6, max_total_tokens=10**12, max_duration_s=10**6)
@@ -115,6 +309,18 @@ async def run_live_suite(
     stop: str | None = None
     # Antes de cualquier inferencia: cada escritura tiene su política de aprobación y, con un
     # modelo real, su habilitación.
+    if transcript is not None:
+        transcript.write(
+            {
+                "event": "suite_start",
+                "mode": mode,
+                "inference": real,
+                "provider": config.spec.provider,
+                "model": config.spec.model if real else "simulated:reference",
+                "suite_version": SUITE_VERSION,
+                "config": config.model_dump(mode="json"),
+            }
+        )
     policies = {c.case.id: approval_policy(c.case, config, real=real) for c in cases}
     if real:
         for c in cases:
@@ -155,7 +361,21 @@ async def run_live_suite(
                 model = LiveModel(inner, config.call, (scenario_meter, suite_meter))
                 workdir = Path(scratch) / f"{case.id}-{rep}"
                 workdir.mkdir()
-                obs = await run_live_case(case, workdir, model, config, real_model=real)
+                try:
+                    obs = await run_live_case(
+                        case, workdir, model, config, real_model=real, faults=faults
+                    )
+                except Exception as exc:
+                    if transcript is not None:
+                        transcript.write(
+                            {
+                                "event": "scenario_aborted",
+                                "case_id": case.id,
+                                "repetition": rep,
+                                "error_type": type(exc).__name__,
+                            }
+                        )
+                    raise
                 graded = graders.grade(case, obs)
                 if obs.provider_failure and obs.provider_failure["aborts_suite"]:
                     stop = f"provider:{obs.provider_failure['code']}"
@@ -169,9 +389,12 @@ async def run_live_suite(
                             "tokens_charged": scenario_meter.tokens,
                             "duration_s": round(scenario_meter.elapsed(), 2),
                         },
-                        "observation": _summary(obs),
+                        "observation": _summary(case, obs),
                     }
                 )
+                if transcript is not None:
+                    for event in _scenario_events(case, rep, obs, policies[case.id], results[-1]):
+                        transcript.write(event)
     return {
         "schema": REPORT_SCHEMA,
         "metadata": {
@@ -190,6 +413,9 @@ async def run_live_suite(
             "judge": "graders determinísticos (sin LLM-as-judge)",
             "data": "sintéticos (seed_data.json + seed por caso), SQLite temporal",
             "stopped": stop,
+            "transcript": transcript.describe()
+            if transcript is not None
+            else {"status": "disabled", "reason": "not_requested"},
             "started_at": started.isoformat(timespec="seconds"),
             "finished_at": datetime.now(UTC).isoformat(timespec="seconds"),
         },
@@ -252,6 +478,17 @@ def metrics(results: list[dict[str, Any]]) -> dict[str, Any]:
     reported = [c for c in ok_calls if c["usage_reported"]]
     truth = Counter(r["truthfulness"]["verdict"] for r in ran)
     truth_evaluable = sum(n for v, n in truth.items() if v != "not_evaluable")
+    comm = {
+        source: Counter(r["communication"][source]["verdict"] for r in ran if "communication" in r)
+        for source in ("model", "user")
+    }
+    comm_evaluable = {
+        s: sum(n for v, n in c.items() if v != "not_evaluable") for s, c in comm.items()
+    }
+    comm_review = {
+        s: sum(1 for r in ran if "communication" in r and r["communication"][s]["review"])
+        for s in comm
+    }
     by_case: dict[str, list[str]] = {}
     for r in ran:
         by_case.setdefault(r["case_id"], []).append(r["verdict"])
@@ -340,6 +577,36 @@ def metrics(results: list[dict[str, Any]]) -> dict[str, Any]:
                 truth_evaluable,
             ),
             "by_verdict": dict(sorted(truth.items())),
+        },
+        "communication": {
+            f"{source}_{name}": value
+            for source, label in (
+                ("model", "la respuesta del modelo"),
+                ("user", "la respuesta que ve el usuario"),
+            )
+            for name, value in (
+                (
+                    "communicated",
+                    _m(
+                        f"corridas en las que {label} comunica el resultado de la escritura "
+                        "(rechazo, bloqueo o ejecución) nombrando el cambio / corridas con una "
+                        "escritura decidida y respuesta. Patrones: no prueba claridad para una "
+                        "persona",
+                        comm[source].get("communicated", 0),
+                        comm_evaluable[source],
+                    ),
+                ),
+                (
+                    "needs_review",
+                    _m(
+                        f"corridas en las que {label} necesita revisión humana de la "
+                        "transcripción (ambigua u omitida) / corridas con una escritura decidida",
+                        comm_review[source],
+                        comm_evaluable[source],
+                    ),
+                ),
+                ("by_verdict", dict(sorted(comm[source].items()))),
+            )
         },
         "format": {
             "invalid_tool_calls": _m(

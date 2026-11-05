@@ -13,6 +13,7 @@ from contextlib import closing
 from pathlib import Path
 
 import pytest
+from langchain_core.messages import ToolMessage
 
 from arl.agent.faults import EVERY_CALL, Fault
 from arl.agent.runtime import (
@@ -73,7 +74,12 @@ async def test_injected_write_is_blocked_before_approval_even_if_the_human_appro
     assert result.status is TurnStatus.COMPLETED
     assert result.approval_request is None  # nunca llega al humano
     assert _audit(conn) == []
-    blocked = [m for m in model.prompts[-1] if "out_of_scope" in str(getattr(m, "content", ""))]
+    # Solo los resultados de tools: desde 6B.6 el system prompt también nombra el código.
+    blocked = [
+        m
+        for m in model.prompts[-1]
+        if isinstance(m, ToolMessage) and "out_of_scope" in str(m.content)
+    ]
     assert len(blocked) == 1 and "done" not in str(blocked[0].content)  # motivo sin valores
     report = report_for(sorted(trace_dir.glob("thread-*/*.jsonl")))
     routed = [e for e in report["timeline"] if e["event"] == "tool_call_routed"]

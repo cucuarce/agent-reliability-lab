@@ -115,6 +115,55 @@ dispatch ─┬→ execute_read ─→ dispatch
   los cambios en lugar de lanzar.
 - **`aupdate_state` sobre un thread pausado** consume el interrupt.
 
+## Resultado de cada escritura y respuesta visible (6B.6)
+
+Motivo: en las dos corridas reales de L11 el modelo recibió `ERROR [rejected_by_user]` y
+contestó "necesito tu aprobación. ¿Confirmas…?", como si la decisión siguiera pendiente. El
+agente sabía con certeza que se había rechazado, pero solo lo comunicaba el texto del LLM.
+
+- **`write_outcomes`** (estado del agente, en el checkpoint; `src/arl/agent/outcomes.py`): un
+  resultado por `action_id` (o `call:<tool_call_id>` si la propuesta no llegó a prepararse), con
+  `code`, `state`, `executed`, `approval` y `replayed`. Lo escriben solo nodos deterministas, desde
+  la fuente autoritativa: `record_rejection` (la decisión validada contra `action_id` y
+  `args_hash`), `execute_write` (la respuesta del servidor: `updated`, `unchanged`, replay,
+  `forbidden`, `not_found`, `invalid_change`, `version_conflict`) y `dispatch`/`prepare_write`
+  (fuera del alcance, tarea no visible, tool call inválida, límite). Proponer `update_task` no es
+  un resultado. `pending` y `uncertain` (`WRITE_UNCERTAIN`, `executed: null`) los deriva el
+  runtime del checkpoint. Se reinicia en cada turno, como `scope_ledger`.
+- **`TurnResult`** suma `model_reply` (solo texto del LLM: nunca `TOOL_LIMIT_REPLY` ni
+  `TURN_LIMIT_REPLY`), `user_reply` (lo que se muestra), `reply_source` (`model` | `agent`) y
+  `write_outcomes`. Con escrituras en el turno, `user_reply` lo arma el agente con una línea por
+  acción (resultados mixtos por separado); sin escrituras es `model_reply`. **`reply` es lo que
+  se muestra** (igual a `user_reply`): el campo obvio es el seguro. `model_reply` queda como
+  evidencia de lo que generó el LLM y `last_ai_text` conserva el valor que `reply` tenía antes
+  (último texto del asistente), solo para evaluaciones comparables con las históricas.
+- **Ningún mensaje del modelo se modifica ni se inventa**: los ids de tool calls y el checkpoint
+  no cambian fuera de `write_outcomes`. El turno no se corta al rechazar: el permiso se libera y
+  el modelo puede volver a proponer, con su alcance y su aprobación (no hay veto persistente).
+- **Turno siguiente.** El historial guarda el texto original del modelo, que el usuario quizá no
+  vio. Si el turno anterior terminó con `reply_source = "agent"`, `run_turn` agrega antes del
+  mensaje nuevo una **nota del sistema** (`SystemMessage`, no del modelo ni del usuario) que
+  resume lo que el usuario vio y aclara que esas decisiones ya están tomadas. Queda en el
+  checkpoint como parte del historial. Test de dos turnos: `tests/integration/test_agent_turn_context.py`.
+- **La nota nunca interpola `user_reply`**: este puede llevar valores que propuso el LLM (un
+  `title` libre, un `task_id` o un valor fuera del alcance, quizá copiados de contenido de una
+  tool), y un `SystemMessage` les daría prioridad alta. `outcomes.system_note` la arma con
+  plantillas fijas por estado desde `write_outcomes`: el `tool_call_id` solo si tiene el formato
+  del agente (`call_<n>_<i>`), los campos solo si son de `update_task`, y una tarea o un valor
+  solo si la aplicación los declaró en el alcance del turno (un campo con `None` no declara
+  valores). Lo demás se omite. Solo afirma que no queda nada pendiente si ningún resultado es
+  `pending` o `uncertain`.
+- **Instrucciones** (`SYSTEM_PROMPT`): la aprobación la pide el sistema fuera del chat;
+  `rejected_by_user` es una decisión ya tomada; no volver a pedirla; solo afirmar cambios
+  confirmados; distinguir rechazo, `forbidden`, `out_of_scope` y fallo técnico. El `ToolMessage`
+  del rechazo conserva `ERROR [rejected_by_user]` y agrega `Resultado: {…}` con `action_id`,
+  `code`, `state`, `executed` y `approval`.
+
+Tests: `tests/integration/test_agent_outcomes.py` (la respuesta real de L11, ejecutada,
+rechazada, denegada, fuera del alcance, `unchanged`, replay, `write_uncertain`, pendiente,
+resultados mixtos, la misma tarea propuesta dos veces, checkpoint e ids, y texto del agente que
+nunca se atribuye al modelo).
+
 ## Garantías y dónde se prueban
 
 | # | Garantía | Tests (`tests/integration/`) |

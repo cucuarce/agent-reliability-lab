@@ -2,15 +2,18 @@
 
 Una escritura con un modelo real necesita, a la vez:
 
-1. que el escenario esté en la lista cerrada del código (``cases.REAL_WRITE_CASES``);
+1. que el escenario esté en la lista cerrada del código (``cases.REAL_WRITE_CASES``), con la
+   única decisión del humano simulado que esa lista le permite (L08 ``approve``, L11
+   ``reject``): ni el caso ni el perfil la cambian;
 2. que el perfil la habilite (``LiveConfig.real_writes``), y que la configuración sea
    exactamente la de un perfil registrado (``PROFILES``): un ``LiveConfig`` armado a mano o
    modificado no habilita nada;
 3. una política de aprobación explícita (``approval_policy``);
 4. en la CLI, ``--confirm-real-calls`` y ``--confirm-real-writes``.
 
-``authorize_real_write`` lo verifica la suite antes de crear el cliente del modelo, el runner al
-empezar el escenario y otra vez justo antes de aprobar cada escritura.
+``authorize_real_write`` lo verifica la CLI, la suite antes de crear el cliente del modelo, el
+runner al empezar el escenario y otra vez justo antes de despachar cada decisión (aprobar o
+rechazar).
 """
 
 from __future__ import annotations
@@ -62,8 +65,12 @@ class LiveConfig(BaseModel):
     def _real_writes_closed(self) -> LiveConfig:
         if unauthorized := sorted(set(self.real_writes) - set(self.allowed_cases or ())):
             raise ValueError(f"el perfil no autoriza los escenarios con escritura {unauthorized}")
-        if outside := sorted(set(self.real_writes) - live_cases.REAL_WRITE_CASES):
+        if outside := sorted(set(self.real_writes) - set(live_cases.REAL_WRITE_CASES)):
             raise ValueError(f"escrituras reales fuera de la lista cerrada: {outside}")
+        for case_id in self.real_writes:
+            decision = self.approvals.get(case_id)
+            if decision is not None and decision not in live_cases.REAL_WRITE_CASES[case_id]:
+                raise ValueError(f"{case_id}: decisión no permitida con un modelo real: {decision}")
         return self
 
     def graph_limits(self) -> Limits:
@@ -135,6 +142,19 @@ PROFILES: dict[str, LiveConfig] = {
         approvals={"L08": "approve"},
         real_writes=("L08",),
     ),
+    # Rechazo explícito con un modelo real: solo L11, una corrida. El caso declara ``reject`` y
+    # la lista cerrada no le permite otra decisión. A lo sumo 6 pedidos a Groq (incluidos los
+    # reintentos), con los mismos 4 turnos y 4 tool calls; los tokens alcanzan para 6 pedidos con
+    # su peor caso (prompt estimado + 1024 de salida, unos 6000 cada uno).
+    "reject-write": LiveConfig(
+        scenario_budget=Budget(max_model_calls=6, max_total_tokens=40_000, max_duration_s=240),
+        suite_budget=Budget(max_model_calls=6, max_total_tokens=40_000, max_duration_s=300),
+        max_model_turns=4,
+        max_tool_calls=4,
+        repeat=1,
+        allowed_cases=("L11",),
+        real_writes=("L11",),
+    ),
 }
 
 
@@ -177,3 +197,7 @@ def authorize_real_write(case: LiveCase, config: LiveConfig) -> None:
         raise WritesDisabled(f"{case.id}: el perfil no habilita escrituras con un modelo real")
     if config not in PROFILES.values():
         raise WritesDisabled(f"{case.id}: la configuración no es la de un perfil registrado")
+    policy = approval_policy(case, config, real=True)
+    if policy is None or policy["decision"] not in live_cases.REAL_WRITE_CASES[case.id]:
+        decision = policy and policy["decision"]
+        raise WritesDisabled(f"{case.id}: decisión no permitida con un modelo real: {decision}")

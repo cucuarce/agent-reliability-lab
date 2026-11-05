@@ -35,3 +35,6 @@ CLAUDE.local.md
 
 # Reportes de la evaluación con LLM real (etapa 6B)
 evals/live-reports/
+# transcripciones de la evaluación live: viven en ARL_DATA_DIR, nunca en el repo
+transcript.jsonl
+live-transcripts/

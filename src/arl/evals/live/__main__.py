@@ -22,6 +22,8 @@ import argparse
 import json
 import os
 import sys
+import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -46,6 +48,7 @@ from arl.evals.live.suite import (
     authorize_real_write,
     run_live_suite,
 )
+from arl.evals.live.transcript import TranscriptUnavailable, TranscriptWriter
 from arl.tracing.logging_setup import LOG_LEVEL_ENV, configure_logging
 
 ALTERNATIVE_MODEL = "openai/gpt-oss-120b"
@@ -98,7 +101,8 @@ def render(report: dict[str, Any]) -> str:
     lines += ["", TOKENS_COUNTED_NOTE, ""]
     if contributing := m.get("runs", {}).get("contributing_causes"):  # desde 6b1.3
         lines.append(f"- runs.contributing_causes: {contributing}")
-    groups = ("functional", "safety", "attacks", "scope", "truthfulness", "format", "provider")
+    groups = ("functional", "safety", "attacks", "scope", "truthfulness", "communication",
+              "format", "provider")  # fmt: skip
     for group in (*groups, "usage"):
         if group not in m:  # reportes 6b1.1, anteriores a scope y truthfulness
             continue
@@ -164,6 +168,7 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument("--repeat", type=int)  # por defecto, el del perfil
         p.add_argument("--model", default=DEFAULT_MODEL)
         p.add_argument("--no-write", action="store_true")
+        p.add_argument("--no-transcript", action="store_true")  # por defecto, sí (sintéticos)
         if name == "run":
             p.add_argument("--confirm-real-calls", action="store_true")
             p.add_argument("--confirm-real-writes", action="store_true")
@@ -195,7 +200,9 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "run":
             _check_real_run(args, cases, config)
         mode = "live" if args.command == "run" else "dry-run"
-        report = anyio.run(lambda: run_live_suite(cases, Path.cwd(), config, mode=mode))
+        writer, unavailable = _transcript_writer(args, mode)
+        extra = {"transcript": writer} if writer is not None else {}
+        report = anyio.run(lambda: run_live_suite(cases, Path.cwd(), config, mode=mode, **extra))
     except (
         InvalidLiveCase,
         ApprovalPolicyMissing,
@@ -206,15 +213,34 @@ def main(argv: list[str] | None = None) -> int:
     ) as exc:
         print(f"arl.evals.live: {exc}", file=sys.stderr)
         return 2
+    if unavailable is not None:
+        report["metadata"]["transcript"] = {"status": "disabled", "reason": unavailable}
     print(render(report))
     if not args.no_write:
         print(f"reporte: {write_report(report, args.out)}")
+    if writer is not None:
+        print(f"transcript: {writer.path}")
     runs = report["metrics"]["runs"]
     return 0 if runs["passed"] == runs["total"] else 1
 
 
 class UsageError(ValueError):
     pass
+
+
+def _transcript_writer(
+    args: argparse.Namespace, mode: str
+) -> tuple[TranscriptWriter | None, str | None]:
+    """La transcripción local, salvo ``--no-write``/``--no-transcript``. Si no hay un lugar
+    seguro (fuera de OneDrive y del repo), la corrida sigue sin ella y el reporte lo dice."""
+    if args.no_write or args.no_transcript:
+        return None, None
+    run_id = f"{datetime.now(UTC):%Y%m%dT%H%M%SZ}-{mode}-{uuid.uuid4().hex[:8]}"
+    try:
+        return TranscriptWriter.create(run_id, root=Path.cwd()), None
+    except TranscriptUnavailable as exc:
+        print(f"arl.evals.live: transcripción desactivada: {exc}", file=sys.stderr)
+        return None, exc.code
 
 
 def _check_real_run(args: argparse.Namespace, cases, config: LiveConfig) -> None:

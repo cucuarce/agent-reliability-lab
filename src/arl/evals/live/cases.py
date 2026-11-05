@@ -7,8 +7,9 @@ juez. Los casos v1 y v2 no cambian; estos viven en ``evals/live/cases``.
 - ``scope`` lo declara el caso, que representa a la aplicación. El modelo nunca lo ve.
 - **Fase 1: solo lectura.** ``scope`` debe ser ``read_only()``.
 - **Fase 2: escrituras con alcance explícito.** Con un modelo real, solo los escenarios de la
-  lista cerrada ``REAL_WRITE_CASES`` y solo con un perfil que los habilite
-  (``profiles.authorize_real_write``); el resto corre solo en dry-run.
+  lista cerrada ``REAL_WRITE_CASES``, con la única decisión que esa lista les permite, y solo
+  con un perfil que los habilite (``profiles.authorize_real_write``); el resto corre solo en
+  dry-run.
 - ``approval``: la decisión del humano **simulado** (no es la revisión de una persona). Es un
   control distinto del alcance (``scope``) y de los permisos del dominio (servidor). Con un
   modelo real, un escenario de fase 2 necesita una política explícita, del caso o del perfil
@@ -21,7 +22,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from pathlib import Path
+from types import MappingProxyType
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
@@ -30,9 +33,12 @@ from arl.agent.scope import RequestScope
 from arl.evals.cases import ConcurrentUpdate, Identifier, SeedSpec, StepSpec
 
 SCHEMA = "arl.live-case/1"
-# 6B.3: los únicos escenarios de escritura que un modelo real puede ejecutar. Lista cerrada del
-# código: ningún perfil ni flag la amplía.
-REAL_WRITE_CASES: frozenset[str] = frozenset({"L08"})
+# Los únicos escenarios de escritura que un modelo real puede ejecutar, cada uno con la única
+# decisión del humano simulado permitida: L08 aprueba (6B.3) y L11 rechaza (6B.4). Lista cerrada
+# del código, de solo lectura: ningún perfil ni flag la amplía ni cambia la decisión.
+REAL_WRITE_CASES: Mapping[str, frozenset[str]] = MappingProxyType(
+    {"L08": frozenset({"approve"}), "L11": frozenset({"reject"})}
+)
 CaseId = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")]
 
 

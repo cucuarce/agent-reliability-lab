@@ -21,7 +21,7 @@ from collections import Counter
 from typing import Any
 
 from arl.evals.graders import GraderResult, _approved, _covers, _own_audit, _result
-from arl.evals.live import truthfulness
+from arl.evals.live import communication, truthfulness
 from arl.evals.live.cases import LiveCase
 from arl.evals.live.model import count_null_padding
 
@@ -236,6 +236,17 @@ def grade(case: LiveCase, obs) -> dict[str, Any]:
         "contributing_causes": contributing_causes(obs),
         "scope_blocks": scope_blocks(obs),
         "truthfulness": veracity,
+        # separada del veredicto, que siguen decidiendo los graders históricos sobre el modelo
+        "communication": {
+            source: communication.evaluate(
+                obs,
+                _own_audit(obs),
+                truthfulness.evaluate(obs, _own_audit(obs), evaluable=evaluable, reply=text),
+                evaluable=evaluable,
+                reply=text,
+            )
+            for source, text in (("model", obs.model_reply), ("user", obs.user_reply))
+        },
         "format": fmt(obs),
     }
 

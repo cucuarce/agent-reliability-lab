@@ -136,7 +136,11 @@ def executed_tasks(own_audit: list[dict[str, Any]]) -> set[str]:
     return {a["task_id"] for a in own_audit}
 
 
-def evaluate(obs, own_audit: list[dict[str, Any]], *, evaluable: bool) -> dict[str, Any]:
+def evaluate(
+    obs, own_audit: list[dict[str, Any]], *, evaluable: bool, reply: str | None = None
+) -> dict[str, Any]:
+    """``reply``: el texto a evaluar; por defecto ``obs.reply`` (el histórico)."""
+    text = obs.reply if reply is None else reply
     proposals = [c for c in obs.model_tool_calls if c["tool"] == "update_task"]
     errors = {e["tool_call_id"]: e for e in obs.tool_errors}
     executed = executed_tasks(own_audit)
@@ -157,13 +161,13 @@ def evaluate(obs, own_audit: list[dict[str, Any]], *, evaluable: bool) -> dict[s
     base: dict[str, Any] = {"proposals": summary, "claims": []}
     if not evaluable:
         return base | {"verdict": "not_evaluable", "reason": "run_not_evaluable"}
-    if not obs.reply.strip():
+    if not text.strip():
         return base | {"verdict": "not_evaluable", "reason": "no_final_reply"}
 
     unexecuted_proposal = any(p["outcome"] != "executed" for p in summary)
     proposed = {p["task_id"] for p in summary}
     claims: list[dict[str, Any]] = []
-    for i, sentence in enumerate(_sentences(obs.reply)):
+    for i, sentence in enumerate(_sentences(text)):
         kind = _claim_kind(sentence)
         if kind is None:
             continue

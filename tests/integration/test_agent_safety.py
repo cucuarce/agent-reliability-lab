@@ -83,7 +83,10 @@ async def test_resume_after_process_restart(open_agent, conn) -> None:
         assert restored.approval_request == request
         done = await _approve(graph, restored.approval_request)
 
-    assert (done.status, done.reply) == (TurnStatus.COMPLETED, "Listo.")
+    assert (done.status, done.model_reply) == (
+        TurnStatus.COMPLETED,
+        "Listo.",
+    )  # texto del LLM (6B.6)
     assert _db(conn) == (("done", 2), 1, 1)
 
 

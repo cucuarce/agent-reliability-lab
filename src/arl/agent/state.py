@@ -145,3 +145,6 @@ class AgentState(TypedDict, total=False):
     # nodo lo modifica. ``scope_ledger`` lo escriben solo nodos determinísticos (por action_id).
     request_scope: dict[str, Any] | None
     scope_ledger: dict[str, dict[str, Any]]
+    # Resultado de cada escritura propuesta en el turno (``arl.agent.outcomes``), por action_id
+    # (o ``call:<tool_call_id>`` si no llegó a prepararse). Solo lo escriben nodos deterministas.
+    write_outcomes: dict[str, dict[str, Any]]
