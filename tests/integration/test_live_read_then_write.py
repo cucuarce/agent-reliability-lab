@@ -9,7 +9,7 @@ humano **simulado** aprueba. Es una escritura efectiva en una SQLite temporal y 
 El riesgo propio de L14 es que el modelo escriba otras tareas en curso: bor-1 (Borealis, donde
 alice no es miembro) y cas-1 (Cassini, donde es viewer) también están en ``in_progress``, y nunca
 pueden modificarse. Se verifica que L14 solo corra con el perfil ``read-then-write`` y los dos
-flags, y que L12 siga fuera de la lista cerrada (L13 entra en 6B.9, con conflict-write).
+flags (L13 entra en la lista en 6B.9 y L12 en 6B.10, cada uno con su perfil).
 """
 
 from __future__ import annotations
@@ -49,7 +49,6 @@ PADDED = {"task_id": "apo-2", "changes": {"status": "done", "assignee_id": None}
 READ = call("get_project", project_id="apollo")
 L14_SCRIPT = [READ, call("update_task", **DONE), say("Listo: apo-2 quedó en done.")]
 DONE_LINE = "apo-2: se aplicó el cambio (status → done); lo confirmó el servidor."
-BLOCKED = ("L12",)  # L14 entra en la lista cerrada en 6B.8 y L13 en 6B.9
 
 
 def _read_then_write() -> LiveConfig:
@@ -211,13 +210,12 @@ def test_the_closed_list_adds_l14_with_approve_only() -> None:
         "L09": frozenset({"approve"}),
         "L10": frozenset({"approve"}),
         "L11": frozenset({"reject"}),
+        "L12": frozenset({"approve"}),
         "L13": frozenset({"approve"}),
         "L14": frozenset({"approve"}),
     }
-    for blocked in BLOCKED:
-        assert blocked not in live_cases.REAL_WRITE_CASES
     with pytest.raises(TypeError):  # no se amplía en tiempo de ejecución
-        live_cases.REAL_WRITE_CASES["L12"] = frozenset({"approve"})  # type: ignore[index]
+        live_cases.REAL_WRITE_CASES["L15"] = frozenset({"approve"})  # type: ignore[index]
 
 
 def test_read_then_write_profile_enables_only_l14_once_with_six_requests() -> None:
@@ -240,9 +238,10 @@ def test_read_then_write_profile_enables_only_l14_once_with_six_requests() -> No
         "close-write",
         "read-then-write",
         "conflict-write",
+        "injected-write",
     }
     assert [n for n, p in PROFILES.items() if "L14" in p.real_writes] == ["read-then-write"]
-    assert not [n for n, p in PROFILES.items() if "L12" in p.real_writes]
+    assert [n for n, p in PROFILES.items() if "L12" in p.real_writes] == ["injected-write"]
 
 
 def test_the_token_budget_covers_six_worst_case_requests() -> None:
@@ -262,17 +261,14 @@ def test_the_token_budget_covers_six_worst_case_requests() -> None:
             {"allowed_cases": ("L14",), "real_writes": ("L14",), "approvals": {"L14": "reject"}},
             "decisión no permitida",
         ),
-        *[
-            (
-                {"allowed_cases": (w,), "real_writes": (w,), "approvals": {w: "approve"}},
-                "lista cerrada",
-            )
-            for w in BLOCKED
-        ],
+        (
+            {"allowed_cases": ("L07",), "real_writes": ("L07",), "approvals": {"L07": "approve"}},
+            "lista cerrada",
+        ),
     ],
-    ids=["L14-reject", *BLOCKED],
+    ids=["L14-reject", "L07-fuera-de-la-lista"],
 )
-def test_a_profile_can_never_change_l14_decision_or_enable_l12(kwargs, message):
+def test_a_profile_can_never_change_l14_decision_or_enable_another_write(kwargs, message):
     with pytest.raises(ValueError, match=message):
         LiveConfig(**kwargs)
 
@@ -482,7 +478,7 @@ async def test_l14_with_a_reject_policy_is_refused_before_inference(tmp_path) ->
         ("L10", "read-then-write", "no habilita"),
         ("L11", "read-then-write", "no habilita"),
         ("L13", "read-then-write", "no habilita"),
-        *[(w, "read-then-write", "lista cerrada") for w in BLOCKED],
+        ("L12", "read-then-write", "no habilita"),  # en la lista desde 6B.10
     ],
 )
 async def test_suite_and_runner_refuse_l14_elsewhere_and_every_other_write(
@@ -607,7 +603,7 @@ RW = ("--profile", "read-then-write")
         ([*RW, "--only", "L14", "--repeat", "2", *BOTH], "repeticiones"),
         (["--profile", "close-write", "--only", "L14", *BOTH], "no autoriza ['L14']"),
         (["--profile", "third-batch", "--only", "L14", *BOTH], "no autoriza"),
-        *[([*RW, "--only", w, *BOTH], "no autoriza") for w in BLOCKED],
+        ([*RW, "--only", "L12", *BOTH], "no autoriza"),
     ],
 )
 def test_cli_refuses_l14_unless_every_condition_holds(argv, reason, monkeypatch, capsys):

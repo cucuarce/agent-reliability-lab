@@ -50,7 +50,6 @@ CLOSE = {"task_id": "apo-3", "changes": {"status": "done"}}
 PADDED = {"task_id": "apo-3", "changes": {"status": "done", "assignee_id": None}}
 L09_SCRIPT = [call("update_task", **CLOSE), say("Listo: apo-3 quedó cerrada.")]
 DONE_LINE = "apo-3: se aplicó el cambio (status → done); lo confirmó el servidor."
-BLOCKED = ("L12",)  # L14 está en la lista desde 6B.8 (read-then-write) y L13 desde 6B.9
 
 
 def _close_write() -> LiveConfig:
@@ -201,11 +200,12 @@ def test_the_closed_list_adds_l09_with_approve_only() -> None:
         "L09": frozenset({"approve"}),
         "L10": frozenset({"approve"}),
         "L11": frozenset({"reject"}),
+        "L12": frozenset({"approve"}),
         "L13": frozenset({"approve"}),
         "L14": frozenset({"approve"}),
     }
     with pytest.raises(TypeError):  # no se amplía en tiempo de ejecución
-        live_cases.REAL_WRITE_CASES["L12"] = frozenset({"approve"})  # type: ignore[index]
+        live_cases.REAL_WRITE_CASES["L15"] = frozenset({"approve"})  # type: ignore[index]
 
 
 def test_close_write_profile_enables_only_l09_once_with_six_requests() -> None:
@@ -225,6 +225,7 @@ def test_close_write_profile_enables_only_l09_once_with_six_requests() -> None:
         "close-write",
         "read-then-write",
         "conflict-write",
+        "injected-write",
     }
     assert [n for n, p in PROFILES.items() if "L09" in p.real_writes] == ["close-write"]
 
@@ -246,11 +247,11 @@ def test_the_token_budget_covers_six_worst_case_requests() -> None:
             "decisión no permitida",
         ),
         (
-            {"allowed_cases": ("L12",), "real_writes": ("L12",), "approvals": {"L12": "approve"}},
+            {"allowed_cases": ("L07",), "real_writes": ("L07",), "approvals": {"L07": "approve"}},
             "lista cerrada",
         ),
     ],
-    ids=["L09-reject", "L12"],
+    ids=["L09-reject", "L07-fuera-de-la-lista"],
 )
 def test_a_profile_can_never_change_l09_decision_or_enable_another_write(kwargs, message):
     with pytest.raises(ValueError, match=message):
@@ -539,7 +540,7 @@ async def test_l09_with_a_reject_policy_is_refused_before_inference(tmp_path) ->
         ("L11", "close-write", "no habilita"),
         ("L14", "close-write", "no habilita"),  # en la lista, pero close-write no
         ("L13", "close-write", "no habilita"),  # ídem (6B.9)
-        *[(w, "close-write", "lista cerrada") for w in BLOCKED],
+        ("L12", "close-write", "no habilita"),  # en la lista desde 6B.10, pero close-write no
     ],
 )
 async def test_suite_and_runner_refuse_l09_elsewhere_and_every_other_write(
@@ -663,7 +664,7 @@ CW = ("--profile", "close-write")
         (["--profile", "first-write", "--only", "L09", *BOTH], "no autoriza ['L09']"),
         (["--profile", "forbidden-write", "--only", "L09", *BOTH], "no autoriza ['L09']"),
         (["--profile", "third-batch", "--only", "L09", *BOTH], "no habilita"),
-        *[([*CW, "--only", w, *BOTH], "no autoriza") for w in BLOCKED],
+        ([*CW, "--only", "L12", *BOTH], "no autoriza"),
     ],
 )
 def test_cli_refuses_l09_unless_every_condition_holds(argv, reason, monkeypatch, capsys):

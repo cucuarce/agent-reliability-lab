@@ -43,7 +43,6 @@ BOTH = ("--confirm-real-calls", "--confirm-real-writes")
 UPDATE = {"task_id": "apo-3", "changes": {"status": "in_progress"}}
 L08_SCRIPT = [call("update_task", **UPDATE), say("Listo: apo-3 quedó en in_progress.")]
 OTHER_WRITES = ("L09", "L10", "L11", "L12", "L13", "L14")
-OUTSIDE_THE_LIST = ("L12",)  # L11 (6B.4), L10 (6B.7), L09 y L14 (6B.8), L13 (6B.9) en la lista
 
 
 @pytest.fixture(autouse=True)
@@ -108,7 +107,7 @@ def test_only_first_write_enables_l08_and_only_to_approve() -> None:
 @pytest.mark.parametrize(
     ("kwargs", "message"),
     [
-        ({"allowed_cases": ("L12",), "real_writes": ("L12",)}, "lista cerrada"),
+        ({"allowed_cases": ("L07",), "real_writes": ("L07",)}, "lista cerrada"),
         ({"allowed_cases": ("L01",), "real_writes": ("L08",)}, "no autoriza"),
         ({"real_writes": ("L08",)}, "no autoriza"),
         ({"db_path": "C:/datos/app.db"}, "Extra inputs"),  # ninguna base persistente o externa
@@ -157,24 +156,24 @@ def _unregistered(**update) -> LiveConfig:
         ("L08", LiveConfig(allowed_cases=("L08",), approvals={"L08": "approve"}), "no habilita"),
         ("L08", _unregistered(repeat=2), "perfil registrado"),
         ("L08", _unregistered(max_tool_calls=8), "perfil registrado"),
-        *[(w, FIRST_WRITE, "lista cerrada") for w in OUTSIDE_THE_LIST],
         ("L11", FIRST_WRITE, "no habilita"),  # en la lista, pero first-write no lo habilita
         ("L10", FIRST_WRITE, "no habilita"),  # ídem (6B.7)
         ("L09", FIRST_WRITE, "no habilita"),  # ídem (6B.8)
         ("L14", FIRST_WRITE, "no habilita"),  # ídem (6B.8)
         ("L13", FIRST_WRITE, "no habilita"),  # ídem (6B.9)
+        ("L12", FIRST_WRITE, "no habilita"),  # ídem (6B.10)
     ],
     ids=[
         "third-batch",
         "a-mano",
         "otra-repeticion",
         "otros-limites",
-        *OUTSIDE_THE_LIST,
         "L11",
         "L10",
         "L09",
         "L14",
         "L13",
+        "L12",
     ],
 )
 async def test_programmatic_suite_refuses_writes_before_creating_the_model(
@@ -188,15 +187,19 @@ async def test_programmatic_suite_refuses_writes_before_creating_the_model(
 
 
 async def test_the_closed_list_holds_even_if_a_registered_profile_enables_more(monkeypatch):
-    """Un perfil alterado en memoria (sin validación) tampoco amplía la lista cerrada."""
+    """Un perfil alterado en memoria (sin validación) tampoco amplía la lista cerrada. Desde
+    6B.10 todos los escenarios de escritura históricos están en ella: se usa una copia de L12
+    con otro id."""
+    l12 = _case("L12")
+    outside = l12.model_copy(update={"case": l12.case.model_copy(update={"id": "L15"})})
     widened = _unregistered(
-        allowed_cases=("L08", "L12"),
-        real_writes=("L08", "L12"),
-        approvals={"L08": "approve", "L12": "approve"},
+        allowed_cases=("L08", "L15"),
+        real_writes=("L08", "L15"),
+        approvals={"L08": "approve", "L15": "approve"},
     )
     monkeypatch.setitem(PROFILES, "widened", widened)
     with pytest.raises(WritesDisabled, match="lista cerrada"):
-        await run_live_suite([_case("L12")], ROOT, widened, mode="live", chat_factory=_never)
+        await run_live_suite([outside], ROOT, widened, mode="live", chat_factory=_never)
 
 
 @pytest.mark.parametrize(

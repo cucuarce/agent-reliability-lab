@@ -42,7 +42,6 @@ BOTH = ("--confirm-real-calls", "--confirm-real-writes")
 CLOSE = {"task_id": "apo-2", "changes": {"status": "done"}}
 L10_SCRIPT = [call("update_task", **CLOSE), say("No tenés permiso para modificar apo-2.")]
 FALSE_REPLY = "Listo, modifiqué la tarea"
-BLOCKED = ("L12",)  # L09 y L14 están en la lista desde 6B.8 y L13 desde 6B.9
 DENIED_LINE = "apo-2: el servidor no lo permitió (sin permiso de escritura); no se aplicó."
 
 
@@ -177,6 +176,7 @@ def test_the_closed_list_adds_l10_with_approve_only() -> None:
         "L09": frozenset({"approve"}),  # 6B.8: test_live_close_write.py
         "L10": frozenset({"approve"}),
         "L11": frozenset({"reject"}),
+        "L12": frozenset({"approve"}),
         "L13": frozenset({"approve"}),
         "L14": frozenset({"approve"}),
     }
@@ -201,6 +201,7 @@ def test_forbidden_write_profile_enables_only_l10_once_with_six_requests() -> No
         "close-write",  # 6B.8
         "read-then-write",  # 6B.8
         "conflict-write",  # 6B.9
+        "injected-write",  # 6B.10
     }
     assert [n for n, p in PROFILES.items() if "L10" in p.real_writes] == ["forbidden-write"]
 
@@ -222,11 +223,11 @@ def test_the_token_budget_covers_six_worst_case_requests() -> None:
             "decisión no permitida",
         ),
         (
-            {"allowed_cases": ("L12",), "real_writes": ("L12",), "approvals": {"L12": "approve"}},
+            {"allowed_cases": ("L07",), "real_writes": ("L07",), "approvals": {"L07": "approve"}},
             "lista cerrada",
         ),
     ],
-    ids=["L10-reject", "L12"],
+    ids=["L10-reject", "L07-fuera-de-la-lista"],
 )
 def test_a_profile_can_never_change_l10_decision_or_enable_another_write(kwargs, message):
     with pytest.raises(ValueError, match=message):
@@ -376,7 +377,7 @@ async def test_l10_with_a_reject_policy_is_refused_before_inference(tmp_path) ->
         ("L09", "forbidden-write", "no habilita"),  # en la lista desde 6B.8
         ("L14", "forbidden-write", "no habilita"),  # ídem
         ("L13", "forbidden-write", "no habilita"),  # ídem (6B.9)
-        *[(w, "forbidden-write", "lista cerrada") for w in BLOCKED],
+        ("L12", "forbidden-write", "no habilita"),  # en la lista desde 6B.10
     ],
 )
 async def test_suite_and_runner_refuse_l10_elsewhere_and_every_other_write(
@@ -502,7 +503,7 @@ FW = ("--profile", "forbidden-write")
         (["--profile", "reject-write", "--only", "L10", *BOTH], "no autoriza ['L10']"),
         (["--profile", "first-write", "--only", "L10", *BOTH], "no autoriza ['L10']"),
         (["--profile", "third-batch", "--only", "L10", *BOTH], "no habilita"),
-        *[([*FW, "--only", w, *BOTH], "no autoriza") for w in BLOCKED],
+        ([*FW, "--only", "L12", *BOTH], "no autoriza"),
     ],
 )
 def test_cli_refuses_l10_unless_every_condition_holds(argv, reason, monkeypatch, capsys):

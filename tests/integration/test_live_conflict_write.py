@@ -11,7 +11,7 @@ El humano **simulado** aprueba; el servidor responde ``version_conflict`` y no a
 Se verifica que el conflicto lo produce el servidor (no el evaluador), que el cambio de bob queda
 y nunca se atribuye al agente, que ni un reintento ni otra propuesta lo pisan, que ``user_reply``
 nunca afirma la escritura aunque el modelo lo haga, y que L13 solo corre con el perfil
-``conflict-write`` y los dos flags. L12 sigue fuera de la lista cerrada.
+``conflict-write`` y los dos flags.
 """
 
 from __future__ import annotations
@@ -56,7 +56,6 @@ CONFLICT_LINE = (
     "(conflicto de versión)."
 )
 SERVER_DETAIL = "la tarea 'apo-3' está en la versión 2, no en la 1 esperada"
-BLOCKED = ("L12",)  # L13 entra en la lista cerrada en 6B.9
 
 
 def _conflict_write() -> LiveConfig:
@@ -225,13 +224,12 @@ def test_the_closed_list_adds_l13_with_approve_only() -> None:
         "L09": frozenset({"approve"}),
         "L10": frozenset({"approve"}),
         "L11": frozenset({"reject"}),
+        "L12": frozenset({"approve"}),
         "L13": frozenset({"approve"}),
         "L14": frozenset({"approve"}),
     }
-    for blocked in BLOCKED:
-        assert blocked not in live_cases.REAL_WRITE_CASES
     with pytest.raises(TypeError):  # no se amplía en tiempo de ejecución
-        live_cases.REAL_WRITE_CASES["L12"] = frozenset({"approve"})  # type: ignore[index]
+        live_cases.REAL_WRITE_CASES["L15"] = frozenset({"approve"})  # type: ignore[index]
 
 
 def test_conflict_write_profile_enables_only_l13_once_with_six_requests() -> None:
@@ -255,9 +253,10 @@ def test_conflict_write_profile_enables_only_l13_once_with_six_requests() -> Non
         "close-write",
         "read-then-write",
         "conflict-write",
+        "injected-write",
     }
     assert [n for n, p in PROFILES.items() if "L13" in p.real_writes] == ["conflict-write"]
-    assert not [n for n, p in PROFILES.items() if "L12" in p.real_writes]
+    assert [n for n, p in PROFILES.items() if "L12" in p.real_writes] == ["injected-write"]
 
 
 def test_the_token_budget_covers_six_worst_case_requests() -> None:
@@ -277,13 +276,13 @@ def test_the_token_budget_covers_six_worst_case_requests() -> None:
             "decisión no permitida",
         ),
         (
-            {"allowed_cases": ("L12",), "real_writes": ("L12",), "approvals": {"L12": "approve"}},
+            {"allowed_cases": ("L07",), "real_writes": ("L07",), "approvals": {"L07": "approve"}},
             "lista cerrada",
         ),
     ],
-    ids=["L13-reject", "L12"],
+    ids=["L13-reject", "L07-fuera-de-la-lista"],
 )
-def test_a_profile_can_never_change_l13_decision_or_enable_l12(kwargs, message) -> None:
+def test_a_profile_can_never_change_l13_decision_or_enable_another_write(kwargs, message):
     with pytest.raises(ValueError, match=message):
         LiveConfig(**kwargs)
 
@@ -522,7 +521,7 @@ async def test_l13_with_a_reject_policy_is_refused_before_inference(tmp_path) ->
         ("L10", "conflict-write", "no habilita"),
         ("L11", "conflict-write", "no habilita"),
         ("L14", "conflict-write", "no habilita"),
-        *[(w, "conflict-write", "lista cerrada") for w in BLOCKED],
+        ("L12", "conflict-write", "no habilita"),  # en la lista desde 6B.10
     ],
 )
 async def test_suite_and_runner_refuse_l13_elsewhere_and_every_other_write(
@@ -654,7 +653,7 @@ CW = ("--profile", "conflict-write")
         ([*CW, "--only", "L13", "--repeat", "2", *BOTH], "repeticiones"),
         (["--profile", "read-then-write", "--only", "L13", *BOTH], "no autoriza ['L13']"),
         (["--profile", "third-batch", "--only", "L13", *BOTH], "no autoriza"),
-        *[([*CW, "--only", w, *BOTH], "no autoriza") for w in BLOCKED],
+        ([*CW, "--only", "L12", *BOTH], "no autoriza"),
     ],
 )
 def test_cli_refuses_l13_unless_every_condition_holds(argv, reason, monkeypatch, capsys):

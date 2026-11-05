@@ -41,7 +41,6 @@ REJECT_WRITE = PROFILES["reject-write"]
 BOTH = ("--confirm-real-calls", "--confirm-real-writes")
 ASSIGN = {"task_id": "apo-3", "changes": {"assignee_id": "bob"}}
 L11_SCRIPT = [call("update_task", **ASSIGN), say("Rechazaste el cambio: apo-3 sigue igual.")]
-BLOCKED = ("L12",)  # L10 (6B.7), L09 y L14 (6B.8) y L13 (6B.9) están en la lista
 
 
 @pytest.fixture(autouse=True)
@@ -146,6 +145,7 @@ def test_the_closed_list_fixes_the_only_decision_of_each_real_write() -> None:
         "L09": frozenset({"approve"}),  # 6B.8: test_live_close_write.py
         "L10": frozenset({"approve"}),  # 6B.7: test_live_forbidden_write.py
         "L11": frozenset({"reject"}),
+        "L12": frozenset({"approve"}),
         "L13": frozenset({"approve"}),
         "L14": frozenset({"approve"}),
     }
@@ -169,6 +169,7 @@ def test_reject_write_profile_enables_only_l11_with_six_requests() -> None:
         "close-write",  # 6B.8
         "read-then-write",  # 6B.8
         "conflict-write",  # 6B.9
+        "injected-write",  # 6B.10
     }
     assert _case("L11").case.approval == "reject"
 
@@ -200,10 +201,10 @@ def test_historical_profiles_are_unchanged() -> None:
             {"allowed_cases": ("L08",), "real_writes": ("L08",), "approvals": {"L08": "reject"}},
             "decisión",
         ),
-        ({"allowed_cases": ("L12",), "real_writes": ("L12",)}, "lista cerrada"),
+        ({"allowed_cases": ("L07",), "real_writes": ("L07",)}, "lista cerrada"),
         ({"allowed_cases": ("L99",), "real_writes": ("L99",)}, "lista cerrada"),
     ],
-    ids=["L11-approve", "L08-reject", "L12", "desconocido"],
+    ids=["L11-approve", "L08-reject", "L07-fuera-de-la-lista", "desconocido"],
 )
 def test_a_profile_can_never_change_the_permitted_decision(kwargs, message) -> None:
     with pytest.raises(ValueError, match=message):
@@ -320,11 +321,11 @@ async def test_l08_keeps_approve_as_its_only_permitted_decision(monkeypatch, tmp
         ("L11", LiveConfig(allowed_cases=("L11",)), "no habilita"),
         ("L11", _unregistered(repeat=2), "perfil registrado"),
         ("L11", _unregistered(max_model_turns=6), "perfil registrado"),
-        *[(w, REJECT_WRITE, "lista cerrada") for w in BLOCKED],
         ("L10", REJECT_WRITE, "no habilita"),  # en la lista (6B.7), pero reject-write no
         ("L09", REJECT_WRITE, "no habilita"),  # ídem (6B.8)
         ("L14", REJECT_WRITE, "no habilita"),  # ídem (6B.8)
         ("L13", REJECT_WRITE, "no habilita"),  # ídem (6B.9)
+        ("L12", REJECT_WRITE, "no habilita"),  # ídem (6B.10)
     ],
     ids=[
         "first-write",
@@ -332,11 +333,11 @@ async def test_l08_keeps_approve_as_its_only_permitted_decision(monkeypatch, tmp
         "a-mano",
         "otra-repeticion",
         "otros-turnos",
-        *BLOCKED,
         "L10",
         "L09",
         "L14",
         "L13",
+        "L12",
     ],
 )
 async def test_suite_and_runner_refuse_l11_elsewhere_and_every_other_write(
@@ -472,7 +473,7 @@ RW = ("--profile", "reject-write")
         ([*RW, "--only", "L11", "--repeat", "2", *BOTH], "repeticiones"),
         (["--profile", "first-write", "--only", "L11", *BOTH], "no autoriza ['L11']"),
         (["--profile", "third-batch", "--only", "L11", *BOTH], "no habilita"),
-        *[([*RW, "--only", w, *BOTH], "no autoriza") for w in BLOCKED],
+        ([*RW, "--only", "L12", *BOTH], "no autoriza"),
     ],
 )
 def test_cli_refuses_l11_unless_every_condition_holds(argv, reason, monkeypatch, capsys):

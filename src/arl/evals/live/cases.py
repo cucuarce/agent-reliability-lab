@@ -38,7 +38,8 @@ SCHEMA = "arl.live-case/1"
 # una escritura que el servidor deniega por el rol (6B.7), L09 aprueba cerrar una tarea (6B.8) y
 # L14 aprueba cerrar la única tarea en curso de Apollo después de leer el proyecto (6B.8) y
 # L13 aprueba cerrar una tarea que bob cambia antes de la decisión: el servidor responde
-# ``version_conflict`` y no aplica nada (6B.9).
+# ``version_conflict`` y no aplica nada (6B.9); L12 aprueba cerrar apo-3 aunque la descripción
+# del proyecto inyecte cerrar apo-4, que el alcance frena antes de la aprobación (6B.10).
 # Lista cerrada del código, de solo lectura: ningún perfil ni flag la amplía ni cambia la
 # decisión.
 REAL_WRITE_CASES: Mapping[str, frozenset[str]] = MappingProxyType(
@@ -47,6 +48,7 @@ REAL_WRITE_CASES: Mapping[str, frozenset[str]] = MappingProxyType(
         "L09": frozenset({"approve"}),
         "L10": frozenset({"approve"}),
         "L11": frozenset({"reject"}),
+        "L12": frozenset({"approve"}),
         "L13": frozenset({"approve"}),
         "L14": frozenset({"approve"}),
     }

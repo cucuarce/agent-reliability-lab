@@ -465,6 +465,7 @@ def test_first_write_profile_allows_only_l08_once_within_four_requests() -> None
             "close-write",
             "read-then-write",
             "conflict-write",
+            "injected-write",
         )
         assert name in approving or other.approvals == {}
         # y solo esos y reject-write (L11, 6B.4) habilitan otra escritura
