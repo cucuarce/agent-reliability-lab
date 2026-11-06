@@ -311,6 +311,109 @@ def test_group_filter_lists_only_that_group(monkeypatch, capsys) -> None:
     assert len(lines) == 16 and all(ln.startswith("- [P1] ") for ln in lines)
 
 
+# --- --names-file: selección exacta de mutantes históricos ---------------------------------------
+
+
+def _catalog(module):
+    return [
+        module.Mutant("uno", "src/arl/target.py", "VALUE = 1", "VALUE = 2"),
+        module.Mutant("dos", "src/arl/target.py", "VALUE = 1", "VALUE = 3"),
+        module.Mutant("p1", "src/arl/target.py", "VALUE = 1", "VALUE = 4", (), "P1"),
+    ]
+
+
+def test_names_select_exact_historical_mutants_in_catalog_order(monkeypatch) -> None:
+    module = _load(monkeypatch)
+    selected, problems = module.select_by_names("# comentario\n\ndos\nuno\n", _catalog(module))
+    assert problems == [] and [m.name for m in selected] == ["uno", "dos"]
+
+
+@pytest.mark.parametrize(
+    ("text", "problem"),
+    [
+        ("", "la selección está vacía"),
+        ("# solo comentarios\n\n", "la selección está vacía"),
+        ("uno\nuno\n", "nombre repetido: uno"),
+        ("uno\ntres\n", "no existe en el catálogo: tres"),
+        ("un\n", "no existe en el catálogo: un"),  # nunca subcadenas
+        ("1\n", "no existe en el catálogo: 1"),  # nunca posiciones
+        ("uno\np1\n", "no es del grupo historical: p1"),
+    ],
+    ids=["vacia", "solo-comentarios", "repetido", "desconocido", "subcadena", "posicion", "p1"],
+)
+def test_invalid_name_selections_select_nothing(monkeypatch, text, problem) -> None:
+    module = _load(monkeypatch)
+    selected, problems = module.select_by_names(text, _catalog(module))
+    assert selected == [] and problem in problems
+
+
+def _names_main(monkeypatch, capsys, root: Path, names: Path, *argv: str) -> tuple[int, str]:
+    module = _load(monkeypatch)
+    monkeypatch.setattr(module, "ROOT", root)
+    monkeypatch.setattr(module, "TESTS", ["tests/test_target.py"])
+    monkeypatch.setattr(module, "MUTANTS", _catalog(module))
+    monkeypatch.setattr(sys, "argv", ["mutation_check.py", "--names-file", str(names), *argv])
+    code = module.main()
+    return code, capsys.readouterr().out
+
+
+def test_an_invalid_names_file_aborts_before_copying_or_running_pytest(
+    fake_repo: Path, tmp_path: Path, monkeypatch, capsys
+) -> None:
+    names = tmp_path / "nombres.txt"
+    names.write_text("uno\nno-existe\n", encoding="utf-8")
+    results = tmp_path / "r.jsonl"
+    code, out = _names_main(monkeypatch, capsys, fake_repo, names, "--results", str(results))
+    assert code == 2
+    assert "selección inválida" in out and "no-existe" in out and "Línea base" not in out
+    assert not results.exists()
+
+
+@pytest.mark.parametrize("extra", [("-k", "uno"), ("--group", "historical")], ids=["k", "group"])
+def test_names_file_cannot_be_combined_with_other_filters(
+    fake_repo: Path, tmp_path: Path, monkeypatch, capsys, extra
+) -> None:
+    names = tmp_path / "nombres.txt"
+    names.write_text("uno\n", encoding="utf-8")
+    code, out = _names_main(monkeypatch, capsys, fake_repo, names, *extra)
+    assert code == 2 and "no se combina" in out
+
+
+def test_a_missing_names_file_aborts(fake_repo: Path, tmp_path: Path, monkeypatch, capsys) -> None:
+    code, out = _names_main(monkeypatch, capsys, fake_repo, tmp_path / "no-existe.txt")
+    assert code == 2 and "no se puede leer --names-file" in out
+
+
+def test_names_file_lists_only_the_selection(
+    fake_repo: Path, tmp_path: Path, monkeypatch, capsys
+) -> None:
+    names = tmp_path / "nombres.txt"
+    names.write_text("dos\n", encoding="utf-8")
+    code, out = _names_main(monkeypatch, capsys, fake_repo, names, "--list")
+    assert code == 0 and "Selección: 1 mutantes" in out
+    assert [ln for ln in out.splitlines() if ln.startswith("- ")] == [
+        "- [historical] dos  (src/arl/target.py)"
+    ]
+
+
+def test_names_file_runs_and_records_the_selection_in_the_jsonl(
+    fake_repo: Path, tmp_path: Path, monkeypatch, capsys
+) -> None:
+    names = tmp_path / "nombres.txt"
+    names.write_text("uno\n", encoding="utf-8")
+    results = tmp_path / "r.jsonl"
+    code, out = _names_main(monkeypatch, capsys, fake_repo, names, "--results", str(results))
+    assert code == 0 and "1/1 mutantes detectados" in out
+    run, _, mutant, summary = _records(results)
+    selection = run["selection"]
+    assert selection["names"] == ["uno"] and selection["mutants"] == 1
+    assert selection["names_file"] == str(names.resolve())
+    assert selection["names_sha256"] == hashlib.sha256(names.read_bytes()).hexdigest()
+    assert (selection["keyword"], selection["group"]) == (None, None)
+    assert (mutant["name"], mutant["status"]) == ("uno", "KILLED")
+    assert summary["KILLED"] == 1
+
+
 # --- El catálogo real (sin pytest ni mutaciones) -------------------------------------------------
 
 

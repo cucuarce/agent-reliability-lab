@@ -22,6 +22,7 @@ Uso:
     uv run python scripts/mutation_check.py --list
     uv run python scripts/mutation_check.py --check-fragments   # sin pytest ni mutaciones
     uv run python scripts/mutation_check.py --group P1 --timeout 300 --results <afuera>.jsonl
+    uv run python scripts/mutation_check.py --names-file <nombres>.txt --list   # selección exacta
     uv run python scripts/mutation_check.py -k runtime --all-failures
 
 Exit: 0 todos detectados, 1 hay sobrevivientes, timeouts o errores, 2 abortado (línea base,
@@ -815,10 +816,40 @@ def _now() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
 
 
+NAMES_FILE_GROUP = "historical"
+
+
+def select_by_names(text: str, mutants: list[Mutant]) -> tuple[list[Mutant], list[str]]:
+    """``(seleccionados, problemas)``. Un nombre exacto del catálogo por línea (las vacías y las
+    que empiezan con ``#`` se ignoran); nunca posiciones ni subcadenas. Solo mutantes del grupo
+    ``historical``. Se devuelven en el orden del catálogo."""
+    names = [
+        ln.strip() for ln in text.splitlines() if ln.strip() and not ln.lstrip().startswith("#")
+    ]
+    problems = []
+    if not names:
+        problems.append("la selección está vacía")
+    problems += [f"nombre repetido: {n}" for n in sorted({n for n in names if names.count(n) > 1})]
+    by_name = {m.name: m for m in mutants}
+    problems += [f"no existe en el catálogo: {n}" for n in dict.fromkeys(names) if n not in by_name]
+    problems += [
+        f"no es del grupo {NAMES_FILE_GROUP}: {n}"
+        for n in dict.fromkeys(names)
+        if n in by_name and by_name[n].group != NAMES_FILE_GROUP
+    ]
+    wanted = set(names)
+    return ([m for m in mutants if m.name in wanted] if not problems else []), problems
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("-k", dest="keyword", help="solo mutantes cuyo nombre contenga el texto")
     parser.add_argument("--group", help="solo mutantes de ese grupo (historical, P1)")
+    parser.add_argument(
+        "--names-file",
+        help="solo los mutantes históricos con esos nombres exactos (uno por línea); "
+        "no se combina con -k ni --group",
+    )
     parser.add_argument("--list", action="store_true", help="lista los mutantes y termina")
     parser.add_argument(
         "--check-fragments", action="store_true",
@@ -835,12 +866,34 @@ def main() -> int:
     parser.add_argument("--results", help="archivo JSONL de resultados, fuera del repositorio")
     args = parser.parse_args()
 
-    mutants = [
-        m
-        for m in MUTANTS
-        if (not args.keyword or args.keyword in m.name)
-        and (not args.group or m.group == args.group)
-    ]
+    names_selection: dict[str, Any] | None = None
+    if args.names_file:
+        if args.keyword or args.group:
+            print("ABORT: --names-file no se combina con -k ni --group")
+            return 2
+        try:
+            raw = Path(args.names_file).read_bytes()
+        except OSError as exc:
+            print(f"ABORT: no se puede leer --names-file ({type(exc).__name__})")
+            return 2
+        mutants, selection_problems = select_by_names(raw.decode("utf-8"), MUTANTS)
+        if selection_problems:
+            print("ABORT: selección inválida")
+            print("\n".join(f"  {p}" for p in selection_problems))
+            return 2
+        names_selection = {
+            "names_file": str(Path(args.names_file).resolve()),
+            "names_sha256": hashlib.sha256(raw).hexdigest(),
+            "names": [m.name for m in mutants],
+        }
+        print(f"Selección: {len(mutants)} mutantes de {args.names_file}")
+    else:
+        mutants = [
+            m
+            for m in MUTANTS
+            if (not args.keyword or args.keyword in m.name)
+            and (not args.group or m.group == args.group)
+        ]
     if args.list:
         for mutant in mutants:
             scope = ", ".join(mutant.tests) if mutant.tests else f"TESTS ({len(TESTS)} archivos)"
@@ -860,7 +913,8 @@ def main() -> int:
     results.write({
         "record": "run", "started_at": _now(), **git_state(ROOT),
         "python": platform.python_version(),
-        "selection": {"keyword": args.keyword, "group": args.group, "mutants": len(mutants)},
+        "selection": {"keyword": args.keyword, "group": args.group, "mutants": len(mutants),
+                      **(names_selection or {})},
         "tests": TESTS, "baseline_tests": baseline_tests, "stop_first": not args.all_failures,
         "timeout_s": args.timeout, "baseline_timeout_s": args.baseline_timeout,
     })  # fmt: skip

@@ -195,6 +195,7 @@ barrera.
 uv run python scripts/mutation_check.py --check-fragments   # catálogo: sin pytest ni mutaciones
 uv run python scripts/mutation_check.py --list --group P1   # qué regresión y qué tests
 uv run python scripts/mutation_check.py --group P1 --timeout 120 --results <afuera>.jsonl
+uv run python scripts/mutation_check.py --names-file <nombres>.txt --list    # selección exacta
 uv run python scripts/mutation_check.py --group historical --results <afuera>.jsonl
 uv run python scripts/mutation_check.py -k gateway --all-failures
 uv run python scripts/mutation_check.py --baseline-only
@@ -227,20 +228,25 @@ uv run python scripts/mutation_check.py --baseline-only
   `summary`. Una corrida cortada conserva lo hecho.
 - **Tests focalizados:** un mutante puede declarar sus tests (`archivo::test`); si no, corre la
   lista `TESTS` completa, como los históricos.
+- **Selección exacta** (`--names-file`): un nombre exacto del catálogo por línea (las vacías y
+  las que empiezan con `#` se ignoran), nunca posiciones ni subcadenas; solo del grupo
+  `historical`; aborta (exit 2) ante nombres desconocidos o repetidos, una selección vacía o
+  combinada con `-k` o `--group`. El JSONL guarda el archivo, su SHA-256 y los nombres.
 - Estas propiedades tienen tests propios (`tests/unit/test_mutation_check.py`), que ejecutan el
   script real sobre un repositorio mínimo (sin mutantes del proyecto): línea base rota, fragmento
   desactualizado y mutante que no compila dan exit 2; un sobreviviente da exit 1; un timeout da
   `TIMEOUT` (nunca `KILLED`) y no deja vivo ni a un nieto de pytest; resultados JSONL;
   `--results` dentro del repo rechazado; tests focalizados en lugar de la lista completa y fuera
   de `TESTS` rechazados; restauración ante una excepción; exclusiones de la copia; entorno sin
-  credenciales; y el catálogo real (110 históricos + 16 P1, fragmentos únicos y compilables).
+  credenciales; selección por nombres (válida e inválidas); y el catálogo real (110 históricos +
+  16 P1, fragmentos únicos y compilables).
 
 ### Catálogo
 
 | Grupo | Mutantes | Tests | Estado |
 |---|---|---|---|
-| `historical` | 110: 34 de etapas 3–4, 13 de observabilidad e integridad de trazas (incluido el parser de D1), 9 del evaluador, 9 del alcance del turno, 2 de la identidad de tool calls (R1), 39 de la evaluación con LLM real y 4 de la veracidad | `TESTS` completa (48 archivos desde 6B.11) | **pendiente de validación sobre el código actual** |
-| `P1` (6B.11) | 16: autorización de dominio (3), concurrencia (1), idempotencia (2), `RequestScope` por `resource`, `field` y `value` (3), respuesta visible autoritativa (2), redacción de la transcripción (1) y atribución propia y externa (4) | focalizados (18 tests en total) | **nunca ejecutados** |
+| `historical` | 110: 34 de etapas 3–4, 13 de observabilidad e integridad de trazas (incluido el parser de D1), 9 del evaluador, 9 del alcance del turno, 2 de la identidad de tool calls (R1), 39 de la evaluación con LLM real y 4 de la veracidad | `TESTS` completa (48 archivos desde 6B.11) | **22/22 detectados** en la selección de riesgo (ver abajo); **los otros 88, no revalidados** sobre el código actual |
+| `P1` (6B.11) | 16: autorización de dominio (3), concurrencia (1), idempotencia (2), `RequestScope` por `resource`, `field` y `value` (3), respuesta visible autoritativa (2), redacción de la transcripción (1) y atribución propia y externa (4) | focalizados (18 tests en total) | **16/16 detectados** (`a057c33`) |
 
 Mutantes P1 y sus tests focalizados (`--list --group P1` los muestra):
 
@@ -269,19 +275,67 @@ pasar el defecto. El control de versión se muta en sus dos capas a la vez (cheq
 compare-and-set del repositorio): cada una sola es un mutante equivalente, porque la otra frena
 la escritura vieja.
 
+### Resultados sobre el código actual (6B.11, 2026-11-05)
+
+Cada batería se corrió **una sola vez**, en una copia temporal, con restauración por hash; el
+repositorio quedó sin cambios y sin procesos hijos vivos. Los JSONL y el log quedan en
+`ARL_DATA_DIR/mutation/` (fuera del repo); no se versionan.
+
+| Batería | Commit | Mutantes | Resultado | Duración | Evidencia |
+|---|---|---|---|---|---|
+| `P1` (`--group P1`, tests focalizados, `--timeout 120`) | `a057c33`, `dirty: false` | 16 | **16 KILLED**, 0 SURVIVED, 0 TIMEOUT, 0 ERROR | 72.4 s (línea base 8.4 s; 2.0–5.4 s por mutante) | `p1-1.jsonl` |
+| Históricos de riesgo (`--names-file`, `TESTS` completa, `--timeout 900`) | `a057c33` + `--names-file` sin commit (`dirty: true`; los archivos mutados no cambiaron) | 22 | **22 KILLED**, 0 SURVIVED, 0 TIMEOUT, 0 ERROR | 686.2 s (línea base 181.9 s; 4.1–86.4 s por mutante) | `historical-core-22-1.jsonl`, `historical-core-22.txt`, `historical-core-22-1.log` |
+
+Todas las detecciones fueron por tests fallidos identificados (código de salida 1); no hubo
+errores de colección. Con `-x` se registra el primer test que falla, no todos los que lo
+detectarían.
+
+La selección de riesgo son los 22 históricos de `graph.py`, `runtime.py` y `state.py` (archivos
+modificados desde la última corrida completa) que protegen identidad (6), aprobación ligada a la
+acción (8), `RequestScope` en el grafo (4) y la ejecución de escrituras (4). Tests que los
+detectaron:
+
+| Mutante | Test |
+|---|---|
+| `runtime: _check_owner no verifica` | `test_thread_cannot_be_resumed_by_another_principal` |
+| `runtime.resume: no compara action_id/args_hash` | `test_approval_for_another_action_is_refused` |
+| `runtime.turn_result: sin chequeo de dueño` | `test_thread_cannot_be_resumed_by_another_principal` |
+| `runtime.continue_after_failure: sin chequeo de dueño` | `test_other_principal_cannot_read_or_alter_a_paused_thread` |
+| `graph.check_principal desactivado` | `test_thread_cannot_be_continued_by_another_principal` |
+| `await_approval: no verifica el principal del proceso` | `test_thread_cannot_be_resumed_by_another_principal` |
+| `await_approval: no verifica que la decisión sea de la acción` | `test_invalid_decision_sent_directly_to_graph_does_not_poison_the_thread` |
+| `await_approval: lanza ante decisión inválida (envenena el thread)` | `test_invalid_decision_sent_directly_to_graph_does_not_poison_the_thread` |
+| `execute_write: no exige aprobación válida` | `test_execute_write_refuses_an_approval_injected_into_the_state` |
+| `reducer de principal lanza (envenena el thread)` | `test_principal_of_a_thread_cannot_change` |
+| `reducer de principal acepta el nuevo principal` | `test_principal_of_a_thread_cannot_change` |
+| `PendingWrite: sello sin verificar` | `test_pending_write_seal_detects_any_tampering` |
+| `ApprovalDecision acepta campos extra` | `test_approval_decision_only_decides` |
+| `idempotency_key ignora la tool call` | `test_two_approved_writes_in_one_thread_get_distinct_keys` |
+| `runtime: run_turn descarta una escritura incierta` | `test_new_message_cannot_discard_an_unconfirmed_write` |
+| `runtime: turn_result no informa WRITE_UNCERTAIN` | `test_state_of_a_thread_stopped_inside_execute_write_is_readable` |
+| `continue_after_failure: acepta threads esperando aprobación` | `test_continue_requires_an_interrupted_run` |
+| `WRITE_UNCERTAIN no expone la clave para reconciliar` | `test_unconfirmed_write_is_reported_as_uncertain_and_recovered_once` |
+| `alcance: dispatch no verifica el alcance (F1 vuelve)` | `test_with_the_defense_out_of_scope_writes_are_blocked_before_approval` |
+| `alcance: prepare_write reserva sin volver a verificar` | `test_two_actions_cannot_hold_a_single_use_grant_at_the_same_time` |
+| `alcance: execute_write no exige la reserva` | `test_execute_write_refuses_an_approved_action_without_its_reservation` |
+| `alcance: el rechazo humano consume el permiso` | `test_rejected_proposal_releases_its_reservation` |
+
+**No revalidados en el código actual:** los otros 88 históricos (tolerancia a fallos y
+reintentos, locks, trazas y observabilidad, R1, evaluador, veracidad, `scope.py`,
+`tool_registry.py` y los 39 de la evaluación con LLM real). Su último resultado es el de abajo,
+sobre otro código. 38 de 126 mutantes se ejecutaron sobre el código actual; los 126 no.
+
 ### Resultados históricos (no son el estado actual)
 
-Corridas sobre el código de su momento; desde 6B.7 el código cambió y la batería no se volvió a
-correr, así que no son una afirmación sobre el código actual:
+Corridas sobre el código de su momento; no son una afirmación sobre el código actual:
 
 - 2026-11-04: 88/88 detectados (corrida completa, ~78 min, unos 53 s por mutante).
 - 2026-11-05 (antes de 6B.7): los 22 agregados después, con `-k "live: "`: 39/39 (el del
   presupuesto de `reject-write` sobrevivió en la primera corrida y se detecta tras agregar el
   test del peor caso).
 
-Costo esperado (sin ejecutar): P1, línea base de unos 18 s y entre 4 y 11 s por mutante sin
-mutar (unos 113 s para los 16), más la copia del repo: unos 3 a 5 minutos. Históricos con la
-lista ampliada (línea base de unos 200 s): entre 2 y 3.5 h; peor caso, unas 6 h.
+Costo estimado de los 88 no revalidados con la lista ampliada (línea base de unos 180 s): entre
+1.5 y 3 h; peor caso, unas 5 h.
 
 ## Riesgos pendientes (no cubiertos)
 
