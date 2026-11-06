@@ -6,6 +6,7 @@ con un mutante propio, para que el test sea rápido.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import importlib.util
 import json
@@ -13,6 +14,7 @@ import os
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
 from types import ModuleType
 
@@ -62,8 +64,11 @@ def _run(
     argv: tuple[str, ...] = (),
     tests: tuple[str, ...] = (),
     suite: tuple[str, ...] = ("tests/test_target.py",),
+    setup: Callable[[ModuleType], None] | None = None,
 ) -> tuple[int, str]:
     module = _load(monkeypatch)
+    if setup:
+        setup(module)
     monkeypatch.setattr(module, "ROOT", root)
     monkeypatch.setattr(module, "TESTS", list(suite))
     mutant = module.Mutant("valor", "src/arl/target.py", old, new, tests)
@@ -95,7 +100,7 @@ def test_mutant_is_killed_and_the_working_tree_is_untouched(
 ) -> None:
     before = _tree_hash(fake_repo)
     code, out = _run(monkeypatch, capsys, fake_repo)
-    assert code == 0
+    assert code == 0, out
     assert "Línea base OK" in out and "KILLED" in out
     assert _tree_hash(fake_repo) == before
 
@@ -301,6 +306,62 @@ def test_pytest_never_inherits_credentials(monkeypatch, tmp_path: Path) -> None:
     env = module.child_env(tmp_path)
     assert "GROQ_API_KEY" not in env and "SOME_TOKEN" not in env
     assert env["ARL_PLAIN_SETTING"] == "ok" and env["PYTHONPATH"] == str(tmp_path / "src")
+
+
+def test_pytest_never_writes_bytecode_in_the_copy(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.delenv("PYTHONDONTWRITEBYTECODE", raising=False)
+    assert _load(monkeypatch).child_env(tmp_path)["PYTHONDONTWRITEBYTECODE"] == "1"
+
+
+def _same_second_collision(module: ModuleType) -> None:
+    """Fuerza la colisión de caché: la mutación conserva el mtime de la fuente (``VALUE = 2``
+    tiene el mismo tamaño), como en una máquina que muta en el mismo segundo en que compiló."""
+    original = module.mutated
+
+    @contextlib.contextmanager
+    def same_second(target: Path, mutant):
+        before = target.stat().st_mtime_ns
+        with original(target, mutant):
+            os.utime(target, ns=(before, before))
+            yield
+
+    module.mutated = same_second
+
+
+@pytest.mark.parametrize(
+    ("keep_env", "keep_drop", "expected_code", "expected_status"),
+    [
+        (True, True, 0, "KILLED"),
+        (True, False, 0, "KILLED"),  # nadie escribe .pyc
+        (False, True, 0, "KILLED"),  # el .pyc de la línea base se borra antes del mutante
+        (False, False, 1, "SURVIVED"),  # sin protección: se ejecuta el bytecode sin mutar
+    ],
+    ids=["protected", "env-only", "drop-only", "unprotected"],
+)
+def test_a_same_size_same_second_mutant_runs_the_mutated_source(
+    fake_repo: Path, monkeypatch, capsys, keep_env, keep_drop, expected_code, expected_status
+) -> None:
+    monkeypatch.delenv("PYTHONDONTWRITEBYTECODE", raising=False)
+
+    def setup(module: ModuleType) -> None:
+        _same_second_collision(module)
+        if not keep_env:
+            child_env = module.child_env
+
+            def writes_bytecode(copy: Path) -> dict[str, str]:
+                env = child_env(copy)
+                env.pop("PYTHONDONTWRITEBYTECODE", None)
+                return env
+
+            monkeypatch.setattr(module, "child_env", writes_bytecode)
+        if not keep_drop:
+            monkeypatch.setattr(module, "drop_bytecode", lambda copy: None)
+
+    before = _tree_hash(fake_repo)
+    code, out = _run(monkeypatch, capsys, fake_repo, setup=setup)
+    assert code == expected_code, out
+    assert f"{expected_status:<8} valor" in out
+    assert _tree_hash(fake_repo) == before
 
 
 def test_group_filter_lists_only_that_group(monkeypatch, capsys) -> None:

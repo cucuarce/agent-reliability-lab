@@ -205,6 +205,13 @@ uv run python scripts/mutation_check.py --baseline-only
   importe desde ella. El árbol de trabajo nunca se modifica. Cada mutación se revierte en un
   `finally` (también ante una excepción o Ctrl+C) y se verifica por hash; si no se puede
   restaurar, aborta.
+- **Sin bytecode viejo:** CPython valida un `.pyc` por el tamaño y el mtime (en segundos) de la
+  fuente, así que un mutante del mismo tamaño escrito en el mismo segundo que la compilación
+  anterior correría el código sin mutar (falso `SURVIVED`). pytest corre con
+  `PYTHONDONTWRITEBYTECODE=1` y, antes de cada corrida, se borran los `__pycache__` de la copia
+  (la variable evita escribirlos, no leerlos). Se agregó al reproducir el defecto (Windows y
+  Linux) tras un fallo aislado del test del runner en GitHub Actions, cuya causa exacta no se
+  confirmó.
 - **La copia no lleva** secretos (`.env`, `.env.*` salvo `.env.example`, `*.pem`, `*.key`), bases
   SQLite (`*.db`, `*.db-*`, `*.sqlite`, `*.sqlite3`), reportes (`live-reports`) ni
   transcripciones (`live-transcripts`, `*.jsonl`). pytest no hereda variables con `API_KEY`,
@@ -238,7 +245,8 @@ uv run python scripts/mutation_check.py --baseline-only
   `TIMEOUT` (nunca `KILLED`) y no deja vivo ni a un nieto de pytest; resultados JSONL;
   `--results` dentro del repo rechazado; tests focalizados en lugar de la lista completa y fuera
   de `TESTS` rechazados; restauración ante una excepción; exclusiones de la copia; entorno sin
-  credenciales; selección por nombres (válida e inválidas); y el catálogo real (110 históricos +
+  credenciales; un mutante del mismo tamaño y el mismo segundo detectado (y `SURVIVED` si se
+  quitan las dos protecciones de bytecode); selección por nombres (válida e inválidas); y el catálogo real (110 históricos +
   16 P1, fragmentos únicos y compilables).
 
 ### Catálogo
@@ -287,7 +295,9 @@ repositorio quedó sin cambios y sin procesos hijos vivos. Los JSONL y el log qu
 | Históricos de riesgo (`--names-file`, `TESTS` completa, `--timeout 900`) | `a057c33` + `--names-file` sin commit (`dirty: true`; los archivos mutados no cambiaron) | 22 | **22 KILLED**, 0 SURVIVED, 0 TIMEOUT, 0 ERROR | 686.2 s (línea base 181.9 s; 4.1–86.4 s por mutante) | `historical-core-22-1.jsonl`, `historical-core-22.txt`, `historical-core-22-1.log` |
 
 Todas las detecciones fueron por tests fallidos identificados (código de salida 1); no hubo
-errores de colección. Con `-x` se registra el primer test que falla, no todos los que lo
+errores de colección. Ambas baterías son anteriores a la protección contra bytecode viejo y no se
+volvieron a correr. La colisión exige dos escrituras del mismo archivo con el mismo tamaño en el
+mismo segundo, y cada mutante duró 2.0 s o más; no se verificó mutante por mutante. Con `-x` se registra el primer test que falla, no todos los que lo
 detectarían.
 
 La selección de riesgo son los 22 históricos de `graph.py`, `runtime.py` y `state.py` (archivos

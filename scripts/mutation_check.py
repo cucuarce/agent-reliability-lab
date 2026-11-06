@@ -626,7 +626,17 @@ def child_env(copy: Path) -> dict[str, str]:
         if not any(marker in k.upper() for marker in _SECRET_ENV_MARKERS)
     }
     env["PYTHONPATH"] = str(copy / "src")
+    # CPython valida un .pyc por el tamaño y el mtime (en segundos) de la fuente: una mutación del
+    # mismo tamaño escrita en el mismo segundo que la compilación anterior correría el código viejo.
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
     return env
+
+
+def drop_bytecode(copy: Path) -> None:
+    """Borra los .pyc de la copia: PYTHONDONTWRITEBYTECODE evita escribirlos, no leerlos, y un
+    subproceso de los tests con un entorno propio podría escribirlos igual."""
+    for cache in [p for p in copy.rglob("__pycache__") if p.is_dir()]:
+        shutil.rmtree(cache)
 
 
 def _kill_tree(proc: subprocess.Popen) -> None:
@@ -665,6 +675,7 @@ def run_pytest(
         if os.name == "nt"
         else {"start_new_session": True}
     )
+    drop_bytecode(copy)  # cada corrida compila la fuente actual (mutada o no)
     started = time.monotonic()
     proc = subprocess.Popen(
         args, cwd=copy, env=child_env(copy), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
