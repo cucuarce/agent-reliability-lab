@@ -1,5 +1,14 @@
 # Agent Reliability Lab
 
+![Tests: 1167 aprobados](https://img.shields.io/badge/tests-1167%20aprobados-brightgreen)
+![Mutantes: 38/38 detectados](https://img.shields.io/badge/mutantes-38%2F38%20detectados-brightgreen)
+![Python 3.12](https://img.shields.io/badge/python-3.12-blue)
+
+<sub>Insignias estáticas: reflejan la última verificación local (pytest: 1167 aprobados y 2
+omitidos; mutantes: 38 de 126 ejecutados sobre el código actual, ver
+[Chequeo de mutaciones](#chequeo-de-mutaciones)). No son resultados de CI ni se actualizan
+solas.</sub>
+
 Laboratorio de confiabilidad para un agente de IA con herramientas. Un agente construido con
 **LangGraph** consulta y modifica proyectos a través de un servidor **MCP**, y cada escritura
 pasa por controles determinísticos: alcance del turno (`RequestScope`), aprobación humana ligada
