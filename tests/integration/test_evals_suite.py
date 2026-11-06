@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 import sqlite3
+import subprocess
 from contextlib import closing
 from pathlib import Path
 
@@ -175,6 +177,24 @@ D1_CASES = {
     "authz-viewer-write", "conflict-version-while-paused", "inject-assign-outsider",
     "inject-description-viewer", "read-missing-project", "spoof-prompt-claim",
 }  # fmt: skip
+# Huella de los 37 casos que registró la línea base. Se calculó en Windows, con los casos en CRLF
+# en el working tree; .gitattributes fija eol=lf, así que un clon limpio (Linux o Windows) los trae
+# en LF y suite_fingerprint da otro valor sobre los mismos casos.
+BASELINE_FINGERPRINT = "8bfdf635fe48e5b3a19bcd22d6a26fabdef9f070e91f0abccbf295abee944521"
+
+
+def _as_crlf(raw: bytes) -> bytes:
+    return raw.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
+
+
+def _fingerprint_as_recorded(cases_root: Path) -> str:
+    """suite_fingerprint sobre los bytes que tenían los casos al grabar la línea base (CRLF),
+    sin importar los finales de línea del checkout."""
+    recorded = []
+    for c in load_cases(cases_root):
+        raw = _as_crlf((cases_root / c.path).read_bytes())
+        recorded.append(c.model_copy(update={"sha256": hashlib.sha256(raw).hexdigest()}))
+    return suite_fingerprint(recorded)
 
 
 def test_historical_baseline_is_preserved_and_attributes_every_failure_to_d1() -> None:
@@ -186,7 +206,8 @@ def test_historical_baseline_is_preserved_and_attributes_every_failure_to_d1() -
     )  # el mismo hash que documenta evals/baselines/6a-before-d1-fix/README.md
     report = json.loads(raw.decode("utf-8"))
     assert report["metadata"]["commit"].startswith("9a40d03")
-    assert report["metadata"]["suite_fingerprint"] == suite_fingerprint(list(BY_ID.values()))
+    assert report["metadata"]["suite_fingerprint"] == BASELINE_FINGERPRINT
+    assert _fingerprint_as_recorded(CASES) == BASELINE_FINGERPRINT
     cases = report["metrics"]["cases"]
     assert (cases["passed"], cases["failed"], cases["total"]) == (28, 9, 37)
     failed = {r["case_id"]: r for r in report["results"] if r["verdict"] != "passed"}
@@ -195,6 +216,48 @@ def test_historical_baseline_is_preserved_and_attributes_every_failure_to_d1() -
         broken = [g for g in result["graders"] if g["status"] != "pass" and g["kind"] != "proposed"]
         assert [g["name"] for g in broken] == ["trace_error_codes"], result["case_id"]
         assert "'unknown'" in broken[0]["detail"]
+
+
+def _copy_cases(dest: Path, newline: bytes) -> Path:
+    for src in CASES.rglob("*.json"):
+        target = dest / src.relative_to(CASES)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(src.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", newline))
+    return dest
+
+
+def test_historical_fingerprint_is_the_same_from_lf_and_crlf_files(tmp_path: Path) -> None:
+    lf = _copy_cases(tmp_path / "lf", b"\n")
+    crlf = _copy_cases(tmp_path / "crlf", b"\r\n")
+    assert suite_fingerprint(load_cases(lf)) != suite_fingerprint(load_cases(crlf))  # el problema
+    assert _fingerprint_as_recorded(lf) == _fingerprint_as_recorded(crlf) == BASELINE_FINGERPRINT
+
+
+@pytest.mark.parametrize("newline", [b"\n", b"\r\n"], ids=["lf", "crlf"])
+def test_historical_fingerprint_detects_a_real_change_in_a_case(tmp_path: Path, newline) -> None:
+    cases = _copy_cases(tmp_path / "cases", newline)
+    target = cases / "authorization" / "authz-assignee-non-member.json"
+    raw = target.read_bytes()
+    target.write_bytes(raw.replace(b"(invalid_change).", b"(invalid_change)!", 1))
+    assert target.read_bytes() != raw
+    assert _fingerprint_as_recorded(cases) != BASELINE_FINGERPRINT
+
+
+@pytest.mark.skipif(
+    shutil.which("git") is None or not (ROOT / ".git").exists(),
+    reason="sin git o fuera de un repositorio",
+)
+def test_a_clean_clone_reproduces_the_historical_fingerprint(tmp_path: Path) -> None:
+    """Un clon nuevo trae los casos como los fija .gitattributes (LF), en cualquier sistema."""
+    clone = tmp_path / "clone"
+    subprocess.run(
+        ["git", "clone", "--quiet", "--depth", "1", ROOT.as_uri(), str(clone)],
+        check=True, capture_output=True,
+    )  # fmt: skip
+    cases = clone / "evals" / "cases"
+    assert b"\r\n" not in b"".join(p.read_bytes() for p in cases.rglob("*.json"))
+    assert len(load_cases(cases)) == 37
+    assert _fingerprint_as_recorded(cases) == BASELINE_FINGERPRINT
 
 
 def test_suite_after_d1_every_case_passes_and_f1_stays_explicit() -> None:

@@ -1,13 +1,14 @@
 # Agent Reliability Lab
 
-![Tests: 1167 aprobados](https://img.shields.io/badge/tests-1167%20aprobados-brightgreen)
+[![tests](https://github.com/cucuarce/agent-reliability-lab/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/cucuarce/agent-reliability-lab/actions/workflows/tests.yml)
 ![Mutantes: 38/38 detectados](https://img.shields.io/badge/mutantes-38%2F38%20detectados-brightgreen)
 ![Python 3.12](https://img.shields.io/badge/python-3.12-blue)
 
-<sub>Insignias estáticas: reflejan la última verificación local (pytest: 1167 aprobados y 2
-omitidos; mutantes: 38 de 126 ejecutados sobre el código actual, ver
-[Chequeo de mutaciones](#chequeo-de-mutaciones)). No son resultados de CI ni se actualizan
-solas.</sub>
+<sub>`tests` es dinámica: refleja el último resultado del workflow de GitHub Actions en `main`
+(`uv lock --check`, Ruff y pytest en Ubuntu, sin clave de Groq). No incluye las evaluaciones
+con Groq ni el chequeo de mutaciones. Las otras dos son estáticas y no se actualizan solas:
+38 de 126 mutantes ejecutados sobre el código actual (ver
+[Chequeo de mutaciones](#chequeo-de-mutaciones)).</sub>
 
 Laboratorio de confiabilidad para un agente de IA con herramientas. Un agente construido con
 **LangGraph** consulta y modifica proyectos a través de un servidor **MCP**, y cada escritura
@@ -303,6 +304,9 @@ uv run ruff format --check .     # formato
 uv lock --check                  # uv.lock coherente con pyproject.toml
 ```
 
+El workflow [`tests`](.github/workflows/tests.yml) corre estos mismos controles en Ubuntu en
+cada push y pull request a `main`, sin secretos ni llamadas a Groq.
+
 Evaluaciones locales (modelo y humano simulados):
 
 ```bash
@@ -399,6 +403,7 @@ evals/live/cases/      Escenarios L01–L14 para el LLM real
 evals/baselines/       Línea base histórica de la suite 6A (anterior a la corrección D1)
 scripts/               Chequeo de mutaciones y generador de trazas de ejemplo
 tests/                 unit/, integration/, contracts/ (APIs de las librerías fijadas), devtools/
+.github/workflows/     CI: uv lock --check, Ruff y pytest en Ubuntu
 CLAUDE.md, .claude/    Infraestructura de desarrollo con Claude Code (no forma parte del producto)
 ```
 

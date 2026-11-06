@@ -1,0 +1,51 @@
+# Tests y calidad en cada push y pull request a main.
+# Sin secretos: no hay GROQ_API_KEY ni llamadas a Groq, no corre la batería de mutantes del
+# proyecto (los tests del runner usan un repositorio sintético mínimo) y las bases SQLite de los
+# tests son temporales. Los tests de aceptación de Claude Code se omiten por sus propias
+# condiciones (ARL_LIVE_SKILL_TEST y el ejecutable `claude`).
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Configurar uv y Python 3.12
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: "0.12.23"
+          python-version: "3.12"
+
+      - name: Verificar uv.lock
+        run: uv lock --check
+
+      - name: Instalar dependencias
+        run: uv sync --locked
+
+      - name: Ruff check
+        run: uv run --locked ruff check .
+
+      - name: Ruff format
+        run: uv run --locked ruff format --check .
+
+      - name: Pytest
+        run: uv run --locked python -m pytest
