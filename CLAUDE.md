@@ -2,12 +2,14 @@
 
 Portfolio: agente LangGraph que gestiona proyectos mediante tools MCP, con autorización
 determinística, aprobación humana de escrituras y evaluaciones de confiabilidad.
-Datos sintéticos. `--user` es una identidad simulada: no hay autenticación real y no hay que afirmarlo.
+Datos sintéticos. El principal (`ARL_PRINCIPAL` del proceso) es una identidad simulada: no hay
+autenticación real y no hay que afirmarlo.
 
 ## Estado y alcance
 
-- Etapa actual: 6B.10 (Groq, ver `docs/live-evals.md`). `uv run python -m arl.evals.live dry-run`
-  no hace inferencia. **Ninguna llamada real (`run`, `models`) sin autorización explícita del
+- Etapa 6B cerrada (6B.11: mutantes P1 16/16 y 22/22 históricos de riesgo detectados; los otros
+  88 históricos, no revalidados; ver `docs/reliability.md`). Groq: `docs/live-evals.md`.
+  `uv run python -m arl.evals.live dry-run` no hace inferencia. **Ninguna llamada real (`run`, `models`) sin autorización explícita del
   usuario**. Escrituras con modelo real: solo las de la lista cerrada `REAL_WRITE_CASES`, cada una
   con su única decisión (L08 `approve` con `first-write`, L11 `reject` con `reject-write`,
   L10 `approve` con `forbidden-write`, denegada por el servidor; L09 `approve` con
